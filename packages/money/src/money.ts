@@ -35,7 +35,7 @@ export function formatMoney(m: Money): string {
 
   if (exponent === 0) return String(m.amount)
 
-  const neg = m.amount < 0
+  const neg = isNegative(m)
   const digits = String(neg ? -m.amount : m.amount).padStart(exponent + 1, "0")
   const out = digits.slice(0, -exponent) + "." + digits.slice(-exponent)
 

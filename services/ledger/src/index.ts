@@ -1,13 +1,22 @@
 import dotenv from "dotenv"
-dotenv.config()
+import * as path from "path"
+
+dotenv.config({ path: path.resolve(process.cwd(), "../../.env") })
 
 import { connectDB } from "./db.js"
-import { migrations } from "../migrations/index.js"
+import { runMigrations } from "./migrate.js"
+import { loadConfig } from "./utils/loadConfig.js"
 
-const PORT = parseInt(process.env.PORT ?? "3000")
+// Check required config - before anything else
+loadConfig()
 
-// Start Server
+// const PORT = parseInt(process.env.PORT || "3000")
 ;(async () => {
+  // Connect database
   const dbClient = await connectDB()
-  await migrations(dbClient)
+
+  // Run migrations
+  await runMigrations(dbClient)
+
+  // Start server at ${PORT}
 })()

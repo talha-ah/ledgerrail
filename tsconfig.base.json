@@ -9,5 +9,7 @@
     "verbatimModuleSyntax": true, // ESM/CJS import hygiene — good discipline
     "strict": true,
     "noUncheckedIndexedAccess": true
-  }
+  },
+  "include": [],
+  "exclude": ["**/*.test.ts"] // don't emit test files
 }

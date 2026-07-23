@@ -1,0 +1,621 @@
+<title>LedgerRail — Build Plan &amp; Progress</title>
+<style>
+  :root {
+    --paper:#FAFBF8; --surface:#FFFFFF; --bar:#EFF4EC;
+    --ink:#16211C; --ink-2:#4A5A52; --ink-3:#7C8A82;
+    --rule:#D3DCD4; --rule-strong:#B7C4BA;
+    --accent:#1D6B49; --accent-soft:#E4F0E8;
+    --ok:#2E7D5B; --now:#A2660B; --wait:#8A968F;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:#0E1512; --surface:#141C18; --bar:#18211C;
+      --ink:#E4EBE5; --ink-2:#A7B5AC; --ink-3:#78867E;
+      --rule:#29332C; --rule-strong:#3A463E;
+      --accent:#56B487; --accent-soft:#17281F;
+      --ok:#56B487; --now:#D9A34A; --wait:#78867E;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#0E1512; --surface:#141C18; --bar:#18211C;
+    --ink:#E4EBE5; --ink-2:#A7B5AC; --ink-3:#78867E;
+    --rule:#29332C; --rule-strong:#3A463E;
+    --accent:#56B487; --accent-soft:#17281F;
+    --ok:#56B487; --now:#D9A34A; --wait:#78867E;
+  }
+  :root[data-theme="light"] {
+    --paper:#FAFBF8; --surface:#FFFFFF; --bar:#EFF4EC;
+    --ink:#16211C; --ink-2:#4A5A52; --ink-3:#7C8A82;
+    --rule:#D3DCD4; --rule-strong:#B7C4BA;
+    --accent:#1D6B49; --accent-soft:#E4F0E8;
+    --ok:#2E7D5B; --now:#A2660B; --wait:#8A968F;
+  }
+
+  body { background:var(--paper); color:var(--ink); font-family:var(--sans);
+         line-height:1.65; font-size:16px; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:940px; margin:0 auto; padding:3rem 1.25rem 5rem; display:flex; flex-direction:column; gap:3rem; }
+  h1,h2,h3,h4 { text-wrap:balance; margin:0; }
+  p { margin:0; }
+  .eyebrow { font-family:var(--mono); font-size:.7rem; letter-spacing:.14em;
+             text-transform:uppercase; color:var(--ink-3); }
+
+  .mast { display:flex; flex-direction:column; gap:.75rem;
+          border-bottom:2px solid var(--ink); padding-bottom:1.25rem; }
+  .mast h1 { font-family:var(--serif); font-size:clamp(2rem,5vw,2.9rem); font-weight:600; letter-spacing:-.015em; }
+  .mast .sub { color:var(--ink-2); max-width:62ch; }
+
+  .stat-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+                gap:1px; background:var(--rule); border:1px solid var(--rule); }
+  .stat { background:var(--surface); padding:.85rem 1rem; display:flex; flex-direction:column; gap:.2rem; }
+  .stat .k { font-family:var(--mono); font-size:.68rem; letter-spacing:.12em;
+             text-transform:uppercase; color:var(--ink-3); }
+  .stat .v { font-family:var(--serif); font-size:1.3rem; font-variant-numeric:tabular-nums; }
+  .stat .v.accent { color:var(--accent); }
+
+  .rail { display:flex; gap:.4rem; flex-wrap:wrap; }
+  .rail-item { flex:1 1 100px; min-width:100px; border-top:3px solid var(--rule-strong);
+               padding-top:.55rem; display:flex; flex-direction:column; gap:.1rem; }
+  .rail-item.done { border-top-color:var(--ok); }
+  .rail-item.now  { border-top-color:var(--now); }
+  .rail-item .n { font-family:var(--mono); font-size:.7rem; color:var(--ink-3); letter-spacing:.08em; }
+  .rail-item .t { font-size:.82rem; line-height:1.35; color:var(--ink-2); }
+  .rail-item.now .t, .rail-item.done .t { color:var(--ink); }
+
+  section { display:flex; flex-direction:column; gap:1.25rem; }
+  .sec-head { display:flex; align-items:baseline; justify-content:space-between;
+              gap:1rem; border-bottom:1px solid var(--rule-strong); padding-bottom:.5rem; flex-wrap:wrap; }
+  .sec-head h2 { font-family:var(--serif); font-size:1.5rem; font-weight:600; }
+
+  .ledger { border:1px solid var(--rule); }
+  .cp { display:grid; grid-template-columns:3.6rem 1fr 6.2rem; gap:0 1rem;
+        padding:1rem 1.1rem; border-bottom:1px solid var(--rule); background:var(--surface); }
+  .cp:last-child { border-bottom:none; }
+  .cp:nth-child(even) { background:var(--bar); }
+  .cp-id { font-family:var(--mono); font-size:.95rem; font-variant-numeric:tabular-nums;
+           color:var(--accent); padding-top:.1rem; }
+  .cp-main { display:flex; flex-direction:column; gap:.55rem; min-width:0; }
+  .cp-main h4 { font-size:1.02rem; font-weight:600; }
+  .cp-sum { color:var(--ink-2); font-size:.94rem; }
+  .cp-status { text-align:right; }
+
+  .chip { display:inline-block; font-family:var(--mono); font-size:.66rem; letter-spacing:.1em;
+          text-transform:uppercase; padding:.2rem .5rem; border:1px solid currentColor; white-space:nowrap; }
+  .chip.ok { color:var(--ok); }
+  .chip.now { color:var(--now); background:var(--accent-soft); }
+  .chip.wait { color:var(--wait); }
+
+  .block { display:flex; flex-direction:column; gap:.3rem; margin-top:.15rem; }
+  .block .lbl { font-family:var(--mono); font-size:.63rem; letter-spacing:.13em;
+                text-transform:uppercase; color:var(--ink-3); }
+  .block ul { margin:0; padding-left:1.05rem; display:flex; flex-direction:column; gap:.28rem; }
+  .block li { font-size:.9rem; color:var(--ink-2); }
+  .block li strong { color:var(--ink); font-weight:600; }
+  code { font-family:var(--mono); font-size:.85em; background:var(--accent-soft);
+         color:var(--ink); padding:.06em .32em; }
+
+  .caught { border-left:2px solid var(--now); padding-left:.75rem; }
+  .caught .lbl { color:var(--now); }
+
+  .tbl-scroll { overflow-x:auto; border:1px solid var(--rule); }
+  table { border-collapse:collapse; width:100%; min-width:560px; background:var(--surface); }
+  th, td { text-align:left; padding:.7rem .9rem; border-bottom:1px solid var(--rule);
+           font-size:.9rem; vertical-align:top; }
+  th { font-family:var(--mono); font-size:.66rem; letter-spacing:.12em; text-transform:uppercase;
+       color:var(--ink-3); background:var(--bar); font-weight:400; }
+  tbody tr:last-child td { border-bottom:none; }
+  td.d { font-family:var(--mono); font-size:.8rem; color:var(--accent); white-space:nowrap; }
+  td .why { color:var(--ink-2); }
+
+  .notes { display:flex; flex-direction:column; gap:1.9rem; }
+  .ngroup { display:flex; flex-direction:column; gap:.75rem; }
+  .ngroup h3 { font-family:var(--mono); font-size:.68rem; letter-spacing:.14em; text-transform:uppercase;
+               color:var(--accent); font-weight:400; border-bottom:1px solid var(--rule); padding-bottom:.4rem; }
+  .item { border-left:2px solid var(--rule-strong); padding-left:.9rem;
+          display:flex; flex-direction:column; gap:.15rem; }
+  .item.ask { border-left-color:var(--accent); }
+  .item .h { font-size:.95rem; font-weight:600; }
+  .item.ask .h { font-family:var(--serif); font-size:1.02rem; font-weight:600; font-style:italic; }
+  .item .b { font-size:.9rem; color:var(--ink-2); }
+
+  .stages { display:flex; flex-direction:column; gap:1px; background:var(--rule); border:1px solid var(--rule); }
+  .stage { background:var(--surface); padding:1.1rem 1.15rem; display:grid;
+           grid-template-columns:2.4rem 1fr; gap:0 1rem; }
+  .stage .num { font-family:var(--mono); font-size:.95rem; color:var(--accent); font-variant-numeric:tabular-nums; }
+  .stage .body { display:flex; flex-direction:column; gap:.5rem; min-width:0; }
+  .stage h4 { font-size:1rem; font-weight:600; display:flex; gap:.6rem; align-items:baseline; flex-wrap:wrap; }
+  .stage .goal { font-size:.92rem; color:var(--ink-2); }
+  .stage .meta { display:flex; flex-direction:column; gap:.35rem; margin-top:.15rem; }
+  .stage .meta div { font-size:.87rem; color:var(--ink-2); }
+  .stage .meta .k { font-family:var(--mono); font-size:.63rem; letter-spacing:.13em;
+                    text-transform:uppercase; color:var(--ink-3); margin-right:.45rem; }
+  .stage.opt { opacity:.82; }
+
+  .stack { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:1px;
+           background:var(--rule); border:1px solid var(--rule); }
+  .stack div { background:var(--surface); padding:.7rem .9rem; }
+  .stack .k { font-family:var(--mono); font-size:.63rem; letter-spacing:.12em;
+              text-transform:uppercase; color:var(--ink-3); display:block; }
+  .stack .v { font-size:.9rem; }
+
+  .note { font-size:.88rem; color:var(--ink-3); border-top:1px solid var(--rule); padding-top:1rem; }
+
+  @media (max-width:600px) {
+    .cp { grid-template-columns:2.8rem 1fr; }
+    .cp-status { grid-column:2; text-align:left; margin-top:.35rem; }
+    .stage { grid-template-columns:2rem 1fr; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <span class="eyebrow">Build plan &middot; interview portfolio project</span>
+    <h1>LedgerRail</h1>
+    <p class="sub">A multi-currency wallet &amp; payments orchestrator: an event-sourced double-entry ledger that moves money across third-party rails, built to stay correct under crashes, retries, and partial failure.</p>
+  </header>
+
+  <div class="stat-strip">
+    <div class="stat"><span class="k">Current stage</span><span class="v accent">1 of 7</span></div>
+    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">3 of 8</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">1.3</span></div>
+    <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
+  </div>
+
+  <section>
+    <div class="sec-head">
+      <h2>The seven stages</h2>
+      <span class="eyebrow">each independently demoable</span>
+    </div>
+    <div class="rail">
+      <div class="rail-item now"><span class="n">01</span><span class="t">Ledger core</span></div>
+      <div class="rail-item"><span class="n">02</span><span class="t">Outbox &rarr; Kafka</span></div>
+      <div class="rail-item"><span class="n">03</span><span class="t">Payment saga</span></div>
+      <div class="rail-item"><span class="n">04</span><span class="t">Resilience</span></div>
+      <div class="rail-item"><span class="n">05</span><span class="t">Observability</span></div>
+      <div class="rail-item"><span class="n">06</span><span class="t">Caching</span></div>
+      <div class="rail-item"><span class="n">07</span><span class="t">WebRTC (optional)</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Stage 1 &mdash; Event-sourced ledger core</h2>
+      <span class="eyebrow">checkpoint ledger</span>
+    </div>
+
+    <div class="ledger">
+
+      <div class="cp">
+        <div class="cp-id">1.0</div>
+        <div class="cp-main">
+          <h4>Repo, tooling &amp; local infra</h4>
+          <p class="cp-sum">The skeleton: a monorepo that builds cleanly and a Postgres that survives a restart.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li>pnpm monorepo (<code>packages/*</code>, <code>services/*</code>), shared <code>tsconfig.base.json</code>, <code>pnpm -r</code> build / typecheck / test</li>
+              <li>Docker Compose: Postgres 18, healthcheck, named volume, env via <code>.env</code> + <code>env_file</code></li>
+              <li>Plain-SQL migrations applied by a small hand-rolled runner &mdash; tracking table, ordering, run-once, one transaction each</li>
+              <li>DB layer: memoized <code>getPool()</code>, <code>query()</code>, and a <code>transaction()</code> primitive doing BEGIN / COMMIT / ROLLBACK / release</li>
+              <li>Secrets out of the repo (<code>.env</code> ignored, <code>.env.example</code> committed), lockfile committed</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>Pool anti-pattern.</strong> A single <code>pool.connect()</code> client was cached as &ldquo;the DB&rdquo; and released by a different function &mdash; use-after-release, and every request serialized onto one connection.</li>
+              <li><strong><code>env_file</code> is not an interpolation source.</strong> <code>${POSTGRES_DB}</code> rendered empty; Compose booted the DB with blank name, user and password.</li>
+              <li><strong>A green test that proved nothing.</strong> Volume persistence &ldquo;passed&rdquo; while the env was broken &mdash; the Postgres image only reads <code>POSTGRES_*</code> when the data directory is empty, so an already-initialized volume masked it.</li>
+              <li>A <code>.env.local</code> holding a real password was one commit away from the repo.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">1.1</div>
+        <div class="cp-main">
+          <h4>The <code>Money</code> type</h4>
+          <p class="cp-sum">A pure, zero-dependency integer core. No float is reachable from any code path.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>@ledgerrail/money</code> &mdash; a package with <em>no runtime dependencies</em></li>
+              <li><code>Money = { amount: bigint, currency }</code> in minor units; <code>money</code>, <code>parseMoney</code>, <code>formatMoney</code>, <code>add</code>, <code>subtract</code>, <code>isNegative</code></li>
+              <li>Exponent lookup (USD/EUR/GBP/PKR = 2, JPY = 0) rather than a hardcoded 2 decimals</li>
+              <li>Parse and format are pure string &harr; bigint &mdash; no <code>parseFloat</code> anywhere</li>
+              <li>Round-trip proven by a <code>fast-check</code> property test over arbitrary <code>bigint</code></li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong><code>10 ^ exponent</code> is bitwise XOR</strong>, not exponentiation &mdash; <code>10 ^ 2 === 8</code>. The scaling math was silently nonsense.</li>
+              <li><strong><code>parseFloat</code> reintroduced the exact bug the type exists to prevent</strong>, and stored a <code>number</code> in a <code>bigint</code> field.</li>
+              <li><strong>Vitest does not type-check.</strong> The suite was green while <code>tsc --noEmit</code> was red &mdash; esbuild strips types without checking them. Both gates now run.</li>
+              <li><strong>$100 became $10.</strong> Padding appended exactly one zero, so <code>parseMoney("100","USD")</code> returned <code>1000n</code> instead of <code>10000n</code>. Every happy-path test passed.</li>
+              <li><code>formatMoney</code> doubled the sign (<code>"--5"</code>) and dropped the decimal point below one unit (<code>"05"</code>, not <code>"0.05"</code>).</li>
+            </ul>
+          </div>
+        </div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">1.2</div>
+        <div class="cp-main">
+          <h4>Event-store schema</h4>
+          <p class="cp-sum">The ledger becomes event-sourced: an append-only journal whose immutability is guaranteed by the database, not by discipline. Verified against the running Postgres.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>accounts</code> &mdash; <code>account_number</code> text unique, <code>currency char(3)</code>, one currency per account</li>
+              <li><code>events</code> &mdash; <code>global_seq</code> bigint identity PK, <code>event_id</code> uuid (<code>gen_random_uuid</code>), <code>event_type</code>, <code>event_version</code> (schema-evolution seam), <code>payload</code> jsonb, unique <code>idempotency_key</code>, <code>created_at</code></li>
+              <li><code>balances</code> &mdash; projection keyed by <code>account_id</code> PK with an FK to <code>accounts</code>, <code>amount</code> bigint, <code>last_event_seq</code> (the resume cursor)</li>
+              <li>Statement-level trigger rejecting <code>UPDATE</code>, <code>DELETE</code> and <code>TRUNCATE</code> &mdash; all three verified rejected against the live DB</li>
+              <li>Hand-rolled plain-SQL migration runner: tracking table, filename ordering, run-once, advisory lock, one transaction per file</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>Two compilers, two dists.</strong> A root <code>tsconfig</code> with <code>rootDir: "."</code> swept the whole repo into a second <code>dist</code>, duplicating every package&rsquo;s build.</li>
+              <li><strong>A stale compiled sibling.</strong> Bare <code>node</code> only worked after a build because it resolved a <code>db.js</code> emitted next to source &mdash; fresh code, stale output. Fixed by running through <code>tsx</code>.</li>
+              <li><strong>&ldquo;client password must be a string.&rdquo;</strong> An unset env var reached pg&rsquo;s SCRAM auth as <code>undefined</code> &mdash; a missing config surfacing three frames deep. Argues for fail-fast config.</li>
+              <li><strong>The linter missed the one real bug.</strong> A non-Postgres SQL dialect underlined valid syntax while ignoring <code>get_random_uuid</code> (should be <code>gen_</code>).</li>
+              <li>Double <code>BEGIN</code>/<code>COMMIT</code> (runner and file), <code>SERIAL</code> on an append-only journal, and a row-level guard a zero-row <code>DELETE</code> would slip past.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">1.3</div>
+        <div class="cp-main">
+          <h4><code>PostTransaction</code> + the double-entry invariant</h4>
+          <p class="cp-sum">Append a balanced transaction and update the projection inside one DB transaction. Then the hard part: enforcing a non-negative balance when balances are <em>derived</em>, not stored truth &mdash; the first real concurrency problem.</p>
+        </div>
+        <div class="cp-status"><span class="chip now">Current</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">1.4</div>
+        <div class="cp-main">
+          <h4>Idempotency keys</h4>
+          <p class="cp-sum">A retried command must return the <em>original result</em>, not an error and not a second posting. The behaviour behind the unique constraint.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">1.5</div>
+        <div class="cp-main">
+          <h4>Balance projection</h4>
+          <p class="cp-sum">Balances derived from events and rebuildable: drop the projection, replay the journal, get identical numbers.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">1.6</div>
+        <div class="cp-main">
+          <h4>Snapshots + replay</h4>
+          <p class="cp-sum">Replay from event zero is O(history). Periodic balance snapshots at a sequence number make rebuild bounded.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">1.7</div>
+        <div class="cp-main">
+          <h4>Demo script + Stage 1 failure drill</h4>
+          <p class="cp-sum">Kill the process mid-transfer and replay a duplicate idempotency key. The invariant must hold: no partial posting, no double-post.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Decisions on the record</h2>
+      <span class="eyebrow">the questions an interviewer digs into</span>
+    </div>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>Decision</th><th>Call</th><th>Reasoning &amp; accepted tradeoff</th></tr></thead>
+        <tbody>
+          <tr><td class="d">Write unit</td><td>Transaction, not account</td><td class="why">One balanced event carries all legs, so the double-entry invariant is checkable inside a single event and a single DB transaction. Defers per-account ordering to the Kafka partition key in Stage 2 rather than paying for cross-stream consistency on day one.</td></tr>
+          <tr><td class="d">Posting shape</td><td>Signed minor units</td><td class="why">A leg carries a signed amount and the invariant is <code>&Sigma; = 0</code> &mdash; one unmissable check, and applying to a balance is <code>+=</code> with no branch. Explicit debit/credit needs a conditional whose direction depends on account type, which is where ledger bugs live. Tradeoff: storing the effect on the balance, not accounting vocabulary, so the debit/credit label is derived at presentation time from sign plus account type.</td></tr>
+          <tr><td class="d">Amount storage</td><td><code>BIGINT</code></td><td class="why">2<sup>63</sup> minor units (~9.2&times;10<sup>18</sup>) is far beyond anything this system handles, and it maps cleanly onto JS <code>bigint</code>. <code>NUMERIC</code> is arbitrary precision but variable-length and slower &mdash; the escape hatch for hyperinflationary currencies or huge aggregate positions.</td></tr>
+          <tr><td class="d">Money</td><td>Integer minor units in <code>bigint</code></td><td class="why">Floats cannot represent most decimals exactly, so money would silently appear and disappear. Exponent lookup rather than a hardcoded 2 because JPY has none.</td></tr>
+          <tr><td class="d">Money placement</td><td>A package, not a service</td><td class="why">Pure domain logic with zero infrastructure dependencies. Services depend on packages; the domain core never depends on infrastructure &mdash; which is also why it is the easiest code in the project to test exhaustively.</td></tr>
+          <tr><td class="d">Migrations</td><td>Plain SQL, own runner</td><td class="why">Writing the DDL by hand keeps the schema fully legible and teaches the SQL underneath the tool; the runner is only a tracking table, ordering, run-once and a transaction per file. Gives up auto-generated <code>down</code> migrations &mdash; which matters less than it sounds, because production practice is forward-only. Revisit a tool once the schema stabilizes.</td></tr>
+          <tr><td class="d">Build</td><td><code>pnpm -r</code>, one build now</td><td class="why">Recursive scripts run in dependency order, so one command builds everything today and each package already owns its own build script for the day a team takes it over. Avoids TS project-references ceremony for a solo build.</td></tr>
+          <tr><td class="d">Test gates</td><td>Type-check <em>and</em> test</td><td class="why">Esbuild-based runners transpile without checking types, so a green suite and a green compiler are orthogonal signals. Both must pass before anything counts as done.</td></tr>
+          <tr><td class="d">Immutability</td><td>Trigger, statement-level</td><td class="why">Append-only is a storage-layer guarantee, not a convention &mdash; even a buggy service cannot rewrite history. Statement-level so a zero-row <code>DELETE</code> still raises, and covering <code>TRUNCATE</code>, which bypasses DELETE triggers.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Field notes</h2>
+      <span class="eyebrow">things to know &middot; grows as we build</span>
+    </div>
+    <div class="notes">
+
+      <div class="ngroup">
+        <h3>Postgres &amp; migrations</h3>
+        <div class="item ask">
+          <span class="h">&ldquo;How do you roll back a migration?&rdquo;</span>
+          <span class="b">You usually don&rsquo;t. Production practice is <strong>forward-only</strong>: write a new migration that fixes forward. A <code>down</code> that drops a column is a data-loss event, and rolling back against live writes is often worse than the bug.</span>
+        </div>
+        <div class="item">
+          <span class="h">Postgres has transactional DDL &mdash; most databases don&rsquo;t.</span>
+          <span class="b">You can wrap <code>CREATE TABLE</code> and <code>CREATE TRIGGER</code> in a transaction and have the whole thing roll back on failure. MySQL auto-commits DDL, so a mid-migration failure strands you with a half-applied schema.</span>
+        </div>
+        <div class="item">
+          <span class="h">Advisory locks stop instances racing to migrate.</span>
+          <span class="b"><code>pg_advisory_lock</code> serializes the run when N services boot at once. It is session-scoped, so lock and unlock must run on the <em>same</em> connection. Better still: run migrations as a deploy step, not at app boot.</span>
+        </div>
+        <div class="item">
+          <span class="h">Don&rsquo;t wrap the transaction twice.</span>
+          <span class="b">If the runner wraps each file in <code>BEGIN</code>/<code>COMMIT</code>, the SQL file must not also contain them. The file&rsquo;s inner <code>COMMIT</code> closes the runner&rsquo;s transaction early, so the &ldquo;record this migration&rdquo; insert lands outside it &mdash; and apply-and-record is no longer atomic.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">&ldquo;<code>JSON</code> or <code>JSONB</code>?&rdquo;</span>
+          <span class="b">Almost always <code>JSONB</code>. <code>JSON</code> keeps the raw text and re-parses on every access; <code>JSONB</code> is parsed binary &mdash; indexable with GIN and much faster. Choose <code>JSON</code> only when you need byte-exact round-tripping of whitespace and key order.</span>
+        </div>
+        <div class="item">
+          <span class="h"><code>SERIAL</code> is a 4-byte int &mdash; and legacy.</span>
+          <span class="b">Ceiling ~2.1 billion, which an append-only event journal can reach. Prefer <code>BIGINT GENERATED ALWAYS AS IDENTITY</code>: SQL-standard, and it avoids <code>SERIAL</code>&rsquo;s sequence-ownership and permission quirks.</span>
+        </div>
+        <div class="item">
+          <span class="h">Statement-level triggers guard better than row-level ones.</span>
+          <span class="b">A <code>FOR EACH ROW</code> guard never fires on <code>DELETE ... WHERE false</code> &mdash; zero rows, zero invocations, statement succeeds. <code>FOR EACH STATEMENT</code> fires once regardless of row count. And <code>TRUNCATE</code> bypasses DELETE triggers entirely, so an immutability guard must name it explicitly.</span>
+        </div>
+        <div class="item">
+          <span class="h">In Postgres, <code>VARCHAR(n)</code> and <code>TEXT</code> are the same thing.</span>
+          <span class="b">Identical storage and performance; the length is a constraint, not an optimization. <code>VARCHAR(255)</code> is a MySQL habit. Prefer <code>TEXT</code> plus an explicit <code>CHECK</code> when a bound genuinely matters.</span>
+        </div>
+        <div class="item">
+          <span class="h">The linter is not the authority &mdash; the database is.</span>
+          <span class="b">A non-Postgres SQL dialect in the editor will underline valid syntax (<code>GENERATED ALWAYS AS IDENTITY</code>, <code>EXECUTE FUNCTION</code>, <code>$$</code>) while missing real errors like a misspelled function name. Run it against Postgres before believing either verdict.</span>
+        </div>
+        <div class="item">
+          <span class="h">The Postgres image reads <code>POSTGRES_*</code> only when the data directory is empty.</span>
+          <span class="b">An already-initialized volume silently ignores changed credentials or database name &mdash; which is how a broken config hides behind a passing test.</span>
+        </div>
+      </div>
+
+      <div class="ngroup">
+        <h3>Money &amp; correctness</h3>
+        <div class="item">
+          <span class="h">Never represent money as a float.</span>
+          <span class="b"><code>0.1 + 0.2 === 0.30000000000000004</code>. In a ledger that rounding error means money silently appears or disappears. Store integer minor units.</span>
+        </div>
+        <div class="item">
+          <span class="h">Currency exponents differ.</span>
+          <span class="b">JPY has 0 decimal places, most currencies 2, Bahraini dinar 3. Hardcoding &divide;100 breaks the first time you add JPY.</span>
+        </div>
+        <div class="item">
+          <span class="h"><code>bigint</code> can&rsquo;t be JSON-serialized.</span>
+          <span class="b"><code>JSON.stringify</code> throws on it, and JSON numbers lose precision past 2<sup>53</sup> &mdash; so amounts cross a serialization boundary as <em>strings</em>, never numbers.</span>
+        </div>
+        <div class="item">
+          <span class="h">In JavaScript <code>^</code> is bitwise XOR, not exponentiation.</span>
+          <span class="b"><code>10 ^ 2 === 8</code>. Power is <code>**</code>. This one compiles, runs, and quietly returns nonsense.</span>
+        </div>
+        <div class="item">
+          <span class="h">Debit and credit are not &ldquo;minus&rdquo; and &ldquo;plus&rdquo;.</span>
+          <span class="b">A debit <em>increases</em> an asset account and <em>decreases</em> a liability. That asymmetry is real accounting and a genuine footgun in code &mdash; the argument for storing signed amounts and deriving the debit/credit label for humans at the edge.</span>
+        </div>
+      </div>
+
+      <div class="ngroup">
+        <h3>Testing</h3>
+        <div class="item">
+          <span class="h">Passing tests and a passing compiler are orthogonal signals.</span>
+          <span class="b">Esbuild-based runners like Vitest strip types without checking them, so a suite can be fully green while <code>tsc --noEmit</code> is red. Gate on both.</span>
+        </div>
+        <div class="item">
+          <span class="h">Example tests only cover the cases you thought of.</span>
+          <span class="b">A single property-based round-trip test (fast-check) caught sign and padding bugs that six hand-written examples missed. Assert the <em>invariant</em>, not a list of samples.</span>
+        </div>
+        <div class="item">
+          <span class="h">A green test can encode the bug.</span>
+          <span class="b">Write the assertion after the implementation and you assert whatever the code currently does &mdash; which is how <code>parseMoney</code> shipped a test proving $100 was $10.</span>
+        </div>
+      </div>
+
+      <div class="ngroup">
+        <h3>Architecture &amp; boundaries</h3>
+        <div class="item ask">
+          <span class="h">&ldquo;Why is that a package and not a service?&rdquo;</span>
+          <span class="b">A package is pure logic you import &mdash; no I/O, no lifecycle, never deployed. A service is a process you run that owns infrastructure. Services depend on packages; packages never depend on services.</span>
+        </div>
+        <div class="item">
+          <span class="h">The dependency rule.</span>
+          <span class="b">Domain core depends on nothing; infrastructure sits at the edges pointing inward. That&rsquo;s why the most safety-critical code in the system is also the easiest to test exhaustively &mdash; no mocks, no containers.</span>
+        </div>
+        <div class="item">
+          <span class="h">Enforce invariants where they can&rsquo;t be bypassed.</span>
+          <span class="b">Event immutability is a database trigger, not a code convention &mdash; so even a buggy service can&rsquo;t rewrite history.</span>
+        </div>
+      </div>
+
+      <div class="ngroup">
+        <h3>Node &amp; tooling</h3>
+        <div class="item">
+          <span class="h">Node strips types but doesn&rsquo;t remap specifiers.</span>
+          <span class="b">Node 24 runs <code>.ts</code> directly, yet <code>./db.js</code> still has to resolve to a real <code>db.js</code> &mdash; it will not fall back to <code>db.ts</code>. If bare <code>node</code> suddenly starts working after a build, you are running fresh source against <em>stale compiled siblings</em>. Run TypeScript through <code>tsx</code>, and never emit beside source.</span>
+        </div>
+        <div class="item">
+          <span class="h">Fail fast on config.</span>
+          <span class="b">An unset env var became <code>undefined</code>, reached the driver, and surfaced as &ldquo;SASL: client password must be a string&rdquo; three frames deep. Validate required config at boot and throw something readable.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">Simple vs extended protocol &mdash; and why parameterized queries are injection-safe.</span>
+          <span class="b">No params &rarr; <strong>simple</strong> protocol: many statements in one string, but values are literals in the text (never interpolate untrusted input). A params array &rarr; <strong>extended</strong> protocol: values travel in a separate message from the SQL, so injection is structurally impossible &mdash; at the cost of one statement per call. That tradeoff is why multi-statement migration files run with no params and app queries always pass params.</span>
+        </div>
+        <div class="item">
+          <span class="h">Use the pool, don&rsquo;t pin a client.</span>
+          <span class="b"><code>pool.query()</code> per operation; <code>pool.connect()</code> only for transactions, released in the same scope that acquired it. Caching one checked-out client serializes your whole app onto a single connection.</span>
+        </div>
+        <div class="item">
+          <span class="h"><code>fileURLToPath(import.meta.url)</code> is the file, not its directory.</span>
+          <span class="b">Wrap it in <code>path.dirname()</code> or every path you build off it is one level too deep &mdash; the kind of bug that has a generator and a runner quietly reading from two different folders.</span>
+        </div>
+        <div class="item">
+          <span class="h">Paths in an extended tsconfig resolve relative to where they&rsquo;re written.</span>
+          <span class="b">A relative <code>outDir</code>/<code>rootDir</code> in a shared <code>tsconfig.base.json</code> anchors to the base file&rsquo;s directory, so every package would emit into one shared root <code>dist</code>. Those two are inherently per-package; the base holds only location-independent options.</span>
+        </div>
+        <div class="item">
+          <span class="h">In a per-package-build monorepo, the root tsconfig must not emit.</span>
+          <span class="b">A root config with <code>rootDir: "."</code> and no <code>include</code> compiles the <em>whole</em> repo into a second <code>dist</code>, duplicating every package&rsquo;s own build. Make the root inert (<code>noEmit</code>, <code>include: []</code>) or a references-only solution file.</span>
+        </div>
+        <div class="item">
+          <span class="h">Compose <code>env_file</code> is not an interpolation source.</span>
+          <span class="b">It injects variables into the <em>container</em>; it does not feed <code>${VAR}</code> in the YAML, which is resolved from the host env or a <code>.env</code> beside the compose file. And <code>environment:</code> overrides <code>env_file:</code>.</span>
+        </div>
+        <div class="item">
+          <span class="h">Commit the lockfile, never <code>node_modules</code>.</span>
+          <span class="b">The lockfile is what makes installs deterministic across machines and CI.</span>
+        </div>
+      </div>
+
+      <div class="ngroup">
+        <h3>Distributed systems &mdash; ahead of us</h3>
+        <div class="item ask">
+          <span class="h">&ldquo;Why not two-phase commit?&rdquo;</span>
+          <span class="b">You can&rsquo;t 2PC across a third-party API &mdash; there is no prepare phase to enrol a bank in. SAGA with compensations is the only real option, and the tradeoff you accept is eventual consistency windows.</span>
+        </div>
+        <div class="item">
+          <span class="h">The dual-write problem.</span>
+          <span class="b">Committing to the database and publishing to a broker cannot be atomic &mdash; crash between them and you&rsquo;ve either lost an event or published a lie. The transactional outbox collapses both into one commit.</span>
+        </div>
+        <div class="item">
+          <span class="h">At-least-once plus idempotent consumers, over exactly-once.</span>
+          <span class="b">Correctness moves into your own inbox table instead of the broker&rsquo;s transactional machinery. Simpler to operate, and you can explain exactly where duplicates die.</span>
+        </div>
+        <div class="item">
+          <span class="h">Quorum is a majority, not a count.</span>
+          <span class="b">A Raft cluster stays available while a majority survives. Kill 2 of 3 brokers and writes stall &mdash; that&rsquo;s the consistency/availability line made visible.</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>What comes after Stage 1</h2>
+      <span class="eyebrow">goal &middot; failure drill &middot; the story it earns</span>
+    </div>
+    <div class="stages">
+
+      <div class="stage">
+        <div class="num">02</div>
+        <div class="body">
+          <h4>Transactional outbox &rarr; Kafka &rarr; projections <span class="chip wait">2 weekends</span></h4>
+          <p class="goal">Ledger commits write events to an outbox in the same transaction; a publisher ships them to Redpanda partitioned by account. Projections become consumers with an inbox for dedup, plus a DLQ and a versioned event for schema evolution.</p>
+          <div class="meta">
+            <div><span class="k">Drill</span>Kill the publisher between DB commit and Kafka publish; poison a message into the DLQ; kill 2 of 3 Redpanda brokers to lose Raft quorum; pause a consumer to force lag.</div>
+            <div><span class="k">Story</span>The dual-write problem, and why at-least-once with idempotent consumers beat Kafka EOS &mdash; plus what actually happens to availability below a majority.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="num">03</div>
+        <div class="body">
+          <h4>Payment orchestration saga <span class="chip wait">1&ndash;1.5 weeks</span></h4>
+          <p class="goal">A cross-currency payment as an orchestrated saga across ledger and mock rails &mdash; hold, quote, settle, commit &mdash; with compensations on failure, plus one choreographed flow for contrast.</p>
+          <div class="meta">
+            <div><span class="k">Drill</span>Make the bank rail settle successfully but fail before returning the ack &mdash; the &ldquo;did it go through?&rdquo; ambiguity. Naive retry double-pays.</div>
+            <div><span class="k">Story</span>2PC is impossible across a third-party bank, so SAGA with compensations; end-to-end idempotency keys plus a reconciler fixed the double-pay.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="num">04</div>
+        <div class="body">
+          <h4>Resilience on the rails <span class="chip wait">1 week</span></h4>
+          <p class="goal">Every external call wrapped: timeout, retry with jitter, circuit breaker, bulkhead, load shedding, and degradation to a cached FX rate. Toxiproxy in front of the mocks.</p>
+          <div class="meta">
+            <div><span class="k">Drill</span>Slow the FX rail to 10s under load. Without bulkheads it starves settlement too.</div>
+            <div><span class="k">Story</span>One slow dependency taking down unrelated payments &mdash; the textbook cascading failure &mdash; and damping the circuit-breaker half-open flap.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="num">05</div>
+        <div class="body">
+          <h4>Observability <span class="chip wait">1 week</span></h4>
+          <p class="goal">OpenTelemetry across the whole path, RED plus business SLIs, and an SLO with multi-window burn-rate alerting on the Grafana LGTM stack.</p>
+          <div class="meta">
+            <div><span class="k">Drill</span>Inject a latency regression in one span and localize it from the trace alone; watch fast-burn page while slow-burn catches the gradual leak.</div>
+            <div><span class="k">Story</span>Defining the settlement SLI, and why burn-rate alerting caught an error-budget leak a static p99 threshold slept through.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="num">06</div>
+        <div class="body">
+          <h4>Caching <span class="chip wait">0.5&ndash;1 week</span></h4>
+          <p class="goal">Redis cache-aside for hot balances and FX rates, with single-flight, jittered TTLs, warming and an eviction policy.</p>
+          <div class="meta">
+            <div><span class="k">Drill</span>Expire a hot merchant key at 500 rps and watch the herd hit Postgres.</div>
+            <div><span class="k">Story</span>A cache stampede at settlement close, fixed with single-flight and jittered TTL &mdash; and why warming everything was the wrong answer.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage opt">
+        <div class="num">07</div>
+        <div class="body">
+          <h4>WebRTC KYC <span class="chip wait">optional</span></h4>
+          <p class="goal">A server-terminated mediasoup SFU pipes verification-call audio into a processing pipeline, emitting an event that releases a payment held in compliance review.</p>
+          <div class="meta">
+            <div><span class="k">Drill</span>Force ICE onto the TURN relay, then kill coturn mid-call.</div>
+            <div><span class="k">Story</span>SFU versus P2P and why TURN is non-negotiable behind symmetric NAT &mdash; and the judgment to call this the one module that did not organically belong.</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Stack</h2>
+      <span class="eyebrow">local-first, no cloud bill</span>
+    </div>
+    <div class="stack">
+      <div><span class="k">Language</span><span class="v">TypeScript / Node.js</span></div>
+      <div><span class="k">Source of truth</span><span class="v">Postgres 18</span></div>
+      <div><span class="k">Migrations</span><span class="v">Plain SQL + own runner</span></div>
+      <div><span class="k">Event backbone</span><span class="v">Redpanda (Kafka API)</span></div>
+      <div><span class="k">Cache</span><span class="v">Redis</span></div>
+      <div><span class="k">Resilience</span><span class="v">cockatiel</span></div>
+      <div><span class="k">Observability</span><span class="v">OpenTelemetry &rarr; Grafana LGTM</span></div>
+      <div><span class="k">Fault injection</span><span class="v">Toxiproxy</span></div>
+      <div><span class="k">Load</span><span class="v">k6</span></div>
+      <div><span class="k">Testing</span><span class="v">Vitest + fast-check</span></div>
+      <div><span class="k">Media (optional)</span><span class="v">mediasoup + coturn</span></div>
+    </div>
+    <p class="note">Working rhythm: each checkpoint is framed with its load-bearing decisions and acceptance criteria, written by hand, then reviewed hard &mdash; and nothing counts as done without evidence. Both gates green, and the failure drill actually run.</p>
+  </section>
+
+</div>
