@@ -3,7 +3,7 @@ import * as path from "path"
 
 dotenv.config({ path: path.resolve(process.cwd(), "../../.env") })
 
-import { connectDB } from "./db.js"
+import { connectDB, getPool } from "./db.js"
 import { runMigrations } from "./migrate.js"
 import { loadConfig } from "./utils/loadConfig.js"
 
@@ -12,11 +12,13 @@ loadConfig()
 
 // const PORT = parseInt(process.env.PORT || "3000")
 ;(async () => {
+  if (process.env.NODE_ENV === "test") return
+
   // Connect database
-  const dbClient = await connectDB()
+  await connectDB()
 
   // Run migrations
-  await runMigrations(dbClient)
+  await runMigrations(getPool())
 
   // Start server at ${PORT}
 })()

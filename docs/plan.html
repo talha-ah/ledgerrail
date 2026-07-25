@@ -279,6 +279,20 @@
         <div class="cp-main">
           <h4><code>PostTransaction</code> + the double-entry invariant</h4>
           <p class="cp-sum">Append a balanced transaction and update the projection inside one DB transaction. Then the hard part: enforcing a non-negative balance when balances are <em>derived</em>, not stored truth &mdash; the first real concurrency problem.</p>
+          <div class="block">
+            <span class="lbl">Layer 1 &mdash; done</span>
+            <ul>
+              <li>Command takes an injected client (caller owns the transaction) &mdash; posts a balanced event + upserts the balance projection atomically</li>
+              <li><code>&Sigma; = 0</code> invariant, same-currency + account-exists guards; six-case suite green, happy path asserts balances moved and one event written</li>
+              <li>Hermetic integration harness: Testcontainers Postgres in <code>globalSetup</code>, committed reference accounts, rollback-per-test isolation, container dropped on teardown</li>
+            </ul>
+          </div>
+          <div class="block">
+            <span class="lbl">Layer 2 &mdash; next</span>
+            <ul>
+              <li>The overdraft race: reproduce a read-modify-write race with two concurrent debits, then fix with row locking</li>
+            </ul>
+          </div>
         </div>
         <div class="cp-status"><span class="chip now">Current</span></div>
       </div>
@@ -391,6 +405,10 @@
           <span class="b">A non-Postgres SQL dialect in the editor will underline valid syntax (<code>GENERATED ALWAYS AS IDENTITY</code>, <code>EXECUTE FUNCTION</code>, <code>$$</code>) while missing real errors like a misspelled function name. Run it against Postgres before believing either verdict.</span>
         </div>
         <div class="item">
+          <span class="h">node-postgres returns <code>BIGINT</code>/<code>NUMERIC</code> as strings.</span>
+          <span class="b">The driver won&rsquo;t risk precision loss past 2<sup>53</sup>, so a <code>BIGINT</code> column comes back as <code>"1"</code>, not a number. Fine to hand straight back into another query; wrap in <code>BigInt(...)</code> before doing any arithmetic on it.</span>
+        </div>
+        <div class="item">
           <span class="h">The Postgres image reads <code>POSTGRES_*</code> only when the data directory is empty.</span>
           <span class="b">An already-initialized volume silently ignores changed credentials or database name &mdash; which is how a broken config hides behind a passing test.</span>
         </div>
@@ -434,6 +452,22 @@
           <span class="h">A green test can encode the bug.</span>
           <span class="b">Write the assertion after the implementation and you assert whatever the code currently does &mdash; which is how <code>parseMoney</code> shipped a test proving $100 was $10.</span>
         </div>
+        <div class="item ask">
+          <span class="h">How do you isolate integration tests against a real database?</span>
+          <span class="b">Two clean strategies. <strong>Transaction-rollback per test</strong> &mdash; run each test inside a transaction and roll it back at the end; nothing is ever committed, so there is nothing to clean up and it is fast (the default). <strong>Throwaway database per run</strong> &mdash; create a fresh database (or schema), migrate, run, drop; heavier but gives real isolation across parallel workers and lets you test commits and cross-transaction behaviour.</span>
+        </div>
+        <div class="item">
+          <span class="h">Sequences are non-transactional &mdash; rollback doesn&rsquo;t reclaim ids.</span>
+          <span class="b">A rolled-back <code>INSERT</code> still consumes the <code>SERIAL</code>/identity value, so seeding rows inside a per-test transaction and rolling back makes ids drift (1,2 &rarr; 3,4 &rarr; &hellip;). Commit stable reference data once, or capture <code>RETURNING id</code> &mdash; never hardcode ids you expect a rollback to reset.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">A hermetic integration-test setup, end to end.</span>
+          <span class="b">Spin a throwaway database (Testcontainers, or a dedicated <code>_test</code> DB), migrate it <em>once</em> in global setup, drop it in teardown. Seed immutable reference data once (committed, stable ids); wrap each test in a transaction and roll it back so its writes never persist &mdash; which requires the code under test to accept an injected client (DI). Keep pure unit tests off the database entirely so they don&rsquo;t wait on a container.</span>
+        </div>
+        <div class="item">
+          <span class="h">Don&rsquo;t weaken an invariant to make tests pass.</span>
+          <span class="b">An append-only trigger that blocks <code>DELETE</code>/<code>TRUNCATE</code> means you can&rsquo;t wipe tables between tests &mdash; that is a feature, and rollback-per-test sidesteps it. Disabling the guard in the test environment means you are testing a different system than the one you ship. Other reach-fors: <code>TRUNCATE ... RESTART IDENTITY CASCADE</code> when a guard permits it, or Testcontainers to spin the dependency up per suite.</span>
+        </div>
       </div>
 
       <div class="ngroup">
@@ -454,6 +488,10 @@
 
       <div class="ngroup">
         <h3>Node &amp; tooling</h3>
+        <div class="item">
+          <span class="h">Untyped object literals widen string literals.</span>
+          <span class="b"><code>const x = { currency: "PKR" }</code> infers <code>currency: string</code>, which won&rsquo;t pass where a <code>Currency</code> union is expected. Give the compiler the target type &mdash; annotate (<code>const x: T = &hellip;</code>) or <code>&hellip; satisfies T</code> &mdash; so it checks and narrows instead of widening. <code>satisfies</code> also flags the typo at the definition, not the call site.</span>
+        </div>
         <div class="item">
           <span class="h">Node strips types but doesn&rsquo;t remap specifiers.</span>
           <span class="b">Node 24 runs <code>.ts</code> directly, yet <code>./db.js</code> still has to resolve to a real <code>db.js</code> &mdash; it will not fall back to <code>db.ts</code>. If bare <code>node</code> suddenly starts working after a build, you are running fresh source against <em>stale compiled siblings</em>. Run TypeScript through <code>tsx</code>, and never emit beside source.</span>
@@ -480,11 +518,15 @@
         </div>
         <div class="item">
           <span class="h">In a per-package-build monorepo, the root tsconfig must not emit.</span>
-          <span class="b">A root config with <code>rootDir: "."</code> and no <code>include</code> compiles the <em>whole</em> repo into a second <code>dist</code>, duplicating every package&rsquo;s own build. Make the root inert (<code>noEmit</code>, <code>include: []</code>) or a references-only solution file.</span>
+          <span class="b">A root config with <code>rootDir: "."</code> and no <code>include</code> compiles the <em>whole</em> repo into a second <code>dist</code>, duplicating every package&rsquo;s own build. Make the root inert with <code>files: []</code> &mdash; an empty <code>include: []</code> instead throws <code>TS18003</code> (&ldquo;no inputs found&rdquo;), because an <em>intentionally</em> empty file list must be declared with <code>files</code>, not matched with globs.</span>
         </div>
         <div class="item">
           <span class="h">Compose <code>env_file</code> is not an interpolation source.</span>
           <span class="b">It injects variables into the <em>container</em>; it does not feed <code>${VAR}</code> in the YAML, which is resolved from the host env or a <code>.env</code> beside the compose file. And <code>environment:</code> overrides <code>env_file:</code>.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">If every package declares its own deps, what does pnpm buy you?</span>
+          <span class="b">Declaring is not duplicating: pnpm stores each version <em>once</em> in a content-addressable store and links it into every package, so disk/download cost is paid once. The per-package declaration is the feature &mdash; a strict non-flat <code>node_modules</code> forbids <strong>phantom dependencies</strong> (using a package you never declared, present only via hoisting). Centralize versions with a <code>catalog:</code> in <code>pnpm-workspace.yaml</code> if the repetition grates.</span>
         </div>
         <div class="item">
           <span class="h">Commit the lockfile, never <code>node_modules</code>.</span>

@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { fileURLToPath } from "url"
 
-import { type PoolClient } from "pg"
+import { type Pool } from "pg"
 
 const MIGRATION_LOCK_ID = 8472910382910n
 const MIGRATIONS_DIR = path.join(
@@ -19,21 +19,23 @@ const MIGRATIONS_DIR = path.join(
  * - Fix forward: If you need to add a column or alter a data type later, create 0002_add_billing.sql. Do not edit 0001_init.sql retroactively.
  * - Keep DDL transaction-safe: Avoid commands like CREATE INDEX CONCURRENTLY or VACUUM inside these migration files, as Postgres forbids running them inside multi-command transactions.
  *
- * @param dbClient
+ * @param pool
  * @returns Promise<void>
  */
 
-export async function runMigrations(dbClient: PoolClient): Promise<void> {
+export async function runMigrations(pool: Pool): Promise<void> {
   console.log("[Migrations] 🔄 Starting migration runner...")
+
+  const client = await pool.connect()
 
   try {
     // 1. Acquire global advisory lock to prevent race conditions during boot
     // This blocks other instances until this process finishes or crashes
-    await dbClient.query("SELECT pg_advisory_lock($1);", [MIGRATION_LOCK_ID])
+    await client.query("SELECT pg_advisory_lock($1);", [MIGRATION_LOCK_ID])
     console.log("[Migrations] 🔒 Acquired exclusive migration advisory lock.")
 
     // 2. Ensure schema_migrations tracking table exists
-    await dbClient.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version TEXT PRIMARY KEY,
         applied_at TIMESTAMPTZ DEFAULT NOW()
@@ -54,7 +56,7 @@ export async function runMigrations(dbClient: PoolClient): Promise<void> {
     }
 
     // 4. Fetch already applied versions from the database
-    const { rows } = await dbClient.query(
+    const { rows } = await client.query(
       "SELECT version FROM schema_migrations;"
     )
     const appliedVersions = new Set(rows.map((row) => row.version))
@@ -80,24 +82,24 @@ export async function runMigrations(dbClient: PoolClient): Promise<void> {
       console.log(`[Migrations] 🚀 Executing migration: ${file}`)
 
       // Leverage Postgres Transactional DDL
-      await dbClient.query("BEGIN;")
+      await client.query("BEGIN;")
       try {
         // Run migration schema changes
-        await dbClient.query(sqlContent)
+        await client.query(sqlContent)
 
         // Record successful application
-        await dbClient.query(
+        await client.query(
           `INSERT INTO schema_migrations (version) VALUES ($1);`,
           [file]
         )
 
-        await dbClient.query("COMMIT;")
+        await client.query("COMMIT;")
         console.log(
           `[Migrations] ✨ Successfully applied and committed: ${file}`
         )
       } catch (error) {
         // If anything fails inside the file, the entire DDL batch rolls back cleanly
-        await dbClient.query("ROLLBACK;")
+        await client.query("ROLLBACK;")
         console.error(
           `[Migrations] ❌ Migration failed and rolled back cleanly: ${file}`
         )
@@ -108,9 +110,9 @@ export async function runMigrations(dbClient: PoolClient): Promise<void> {
     console.log("[Migrations] 🎉 All migrations processed successfully.")
   } finally {
     // 7. Always release the advisory lock, even if migrations fail
-    await dbClient.query(`SELECT pg_advisory_unlock($1);`, [MIGRATION_LOCK_ID])
+    await client.query(`SELECT pg_advisory_unlock($1);`, [MIGRATION_LOCK_ID])
     console.log("[Migrations] 🔓 Released migration advisory lock.")
 
-    dbClient.release()
+    client.release()
   }
 }

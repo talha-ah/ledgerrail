@@ -1,8 +1,8 @@
-import { Pool, type QueryResult } from "pg"
+import { Pool, type PoolClient, type QueryResult } from "pg"
 
 let pool: Pool | null = null
 
-export const getPool = () => {
+export const getPool = (): Pool => {
   if (!pool) {
     pool = new Pool({
       host: process.env.POSTGRES_HOST,
@@ -18,13 +18,12 @@ export const getPool = () => {
   return pool
 }
 
-export const connectDB = async () => {
+export const connectDB = async (): Promise<void> => {
   try {
-    const pool = getPool() // Initialize the pool
+    const localPool = getPool() // Initialize the pool
 
-    const client = await pool.connect()
+    await localPool.connect()
     console.log("Connected to the database successfully.")
-    return client
   } catch (err) {
     console.error("Error connecting to the database:", err)
     throw err
@@ -41,8 +40,8 @@ export const query = async <T extends object>(
   return pool.query<T>(text, params)
 }
 
-export const transaction = async <T extends object>(
-  callback: (client: any) => Promise<T>
+export const transaction = async <T>(
+  callback: (client: PoolClient) => Promise<T>
 ): Promise<T> => {
   const pool = getPool() // Ensure the pool is initialized before starting a transaction
   const client = await pool.connect()
