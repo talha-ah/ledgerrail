@@ -38,7 +38,7 @@ describe("Overdraft Race", () => {
 
   afterAll(async () => await pool?.end())
 
-  it("two concurrent debits overdraw the account", async () => {
+  it("concurrent debits cannot overdraw", async () => {
     const funderInput: PostTransactionInput = {
       idempotencyKey: randomString(),
       currency: "PKR",
@@ -69,34 +69,45 @@ describe("Overdraft Race", () => {
     const b = await pool.connect()
 
     const debit = async (client: PoolClient) => {
-      const debitInput: PostTransactionInput = {
-        idempotencyKey: randomString(),
-        currency: "PKR",
-        postings: [
-          {
-            accountId: systemId,
-            amount: 80n,
-          },
-          {
-            accountId: assetId,
-            amount: -80n,
-          },
-        ],
+      try {
+        const debitInput: PostTransactionInput = {
+          idempotencyKey: randomString(),
+          currency: "PKR",
+          postings: [
+            {
+              accountId: systemId,
+              amount: 80n,
+            },
+            {
+              accountId: assetId,
+              amount: -80n,
+            },
+          ],
+        }
+
+        await client.query("BEGIN")
+        const result = await postTransaction(debitInput, client)
+        await client.query("COMMIT")
+
+        return result
+      } catch (err) {
+        await client.query("ROLLBACK")
+        throw err
+      } finally {
+        client.release()
       }
-
-      await client.query("BEGIN")
-      const result = await postTransaction(debitInput, client)
-      await client.query("COMMIT")
-      client.release()
-
-      return result
     }
 
     const result = await Promise.allSettled([debit(a), debit(b)])
 
-    for (const res of result) {
-      expect(res.status).toBe("fulfilled")
-    }
+    const fulfilled = result.filter((r) => r.status === "fulfilled")
+    const rejected = result.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected"
+    )
+
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]?.reason.message).toBe("Insufficient funds")
 
     const { rows: balances } = await pool.query<Balance>(
       "SELECT * FROM balances WHERE account_id = $1",
@@ -104,6 +115,6 @@ describe("Overdraft Race", () => {
     )
     if (!balances[0]) throw new Error("Balance not found")
 
-    expect(BigInt(balances[0].amount)).toBe(-60n) // both debits got through
+    expect(BigInt(balances[0].amount)).toBe(20n)
   })
 })

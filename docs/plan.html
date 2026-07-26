@@ -159,8 +159,8 @@
 
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">1 of 7</span></div>
-    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">3 of 8</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">1.3</span></div>
+    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">4 of 8</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">1.4</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -288,13 +288,27 @@
             </ul>
           </div>
           <div class="block">
-            <span class="lbl">Layer 2 &mdash; next</span>
+            <span class="lbl">Layer 2 &mdash; done</span>
             <ul>
-              <li>The overdraft race: reproduce a read-modify-write race with two concurrent debits, then fix with row locking</li>
+              <li>Account types: <code>system</code> accounts may go negative (that is how money enters a conserved ledger), <code>asset</code> accounts may not</li>
+              <li><strong>Reproduced the lost update</strong> &mdash; funded 100, two concurrent debits of 80 on separate connections, both committed, balance landed at &minus;60</li>
+              <li>Fixed with <code>SELECT &hellip; FOR UPDATE</code> on each debited balance row; the exemption check precedes the lock so the system account isn&rsquo;t a global serialization point</li>
+              <li>Reproduction kept as a regression test with the assertion inverted: one debit fulfilled, one rejected with <code>Insufficient funds</code>, balance settles at 20 &mdash; see <a href="decisions/0002-overdraft-locking.md">ADR 0002</a></li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>A test that asserted nothing, twice.</strong> Un-awaited <code>withClient</code> callbacks meant the assertions never ran; and the earlier suite checked return types rather than whether money actually moved.</li>
+              <li><strong>Two silent hangs, same root cause.</strong> A thrown query left a client checked out, so <code>pool.end()</code> waited forever &mdash; and the real error never printed. Once the lock made one branch reject <em>by design</em>, cleanup had to move into <code>finally</code>.</li>
+              <li><strong>A missing <code>COMMIT</code> deadlocked the suite</strong> &mdash; two open transactions held row locks neither would release.</li>
+              <li><strong>Explicit seed ids never advanced the sequence</strong>, so the first auto-generated id collided with a seeded row.</li>
+              <li><strong>Tests were excluded from type-checking</strong> &mdash; an <code>exclude</code> in the shared base config is inherited by every package, so <code>tsc</code> silently skipped every test file.</li>
+              <li>An abstraction that made things worse: wrapping connection handling in callbacks added nesting to a test whose <em>subject</em> was transaction boundaries. Flat and explicit won.</li>
             </ul>
           </div>
         </div>
-        <div class="cp-status"><span class="chip now">Current</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">

@@ -18,56 +18,64 @@ export async function postTransaction(
   input: PostTransactionInput,
   client: PoolClient
 ): Promise<{ globalSeq: string; eventId: string }> {
-  // 1. shape checks: >= 2 postings, no zero-amount legs
-  if (input.postings.length < 2) {
+  // Lock rows in a deterministic order (ascending account id) so concurrent transactions can't deadlock
+  const postings = [...input.postings].sort((a, b) => a.accountId - b.accountId)
+
+  // Shape checks: >= 2 postings, no zero-amount legs
+  if (postings.length < 2) {
     throw new Error("Less legs found")
   }
-  if (input.postings.some((p) => p.amount === 0n)) {
+  if (postings.some((p) => p.amount === 0n)) {
     throw new Error("Invalid legs found")
   }
 
-  // 2. INVARIANT: postings.reduce((s,p) => s+p.amount, 0n) === 0n -- else throw
-  const totalAmount = input.postings.reduce((s, p) => s + p.amount, 0n)
+  // INVARIANT: postings.reduce((s,p) => s+p.amount, 0n) === 0n -- else throw
+  const totalAmount = postings.reduce((s, p) => s + p.amount, 0n)
   if (totalAmount !== 0n) throw new Error("Invalid transaction amounts")
 
-  // 3. load the referenced accounts; assert each exists and its currency === input.currency
+  // Load the referenced accounts; assert each exists and its currency === input.currency
   const { rows: accounts } = await client.query<Account>(
     `SELECT * FROM accounts WHERE id = ANY($1)`,
-    [input.postings.map((p) => p.accountId)]
+    [postings.map((p) => p.accountId)]
   )
 
   const accountsSet = new Set(accounts.map((a) => a.id))
 
-  if (input.postings.some((p) => !accountsSet.has(p.accountId))) {
+  if (postings.some((p) => !accountsSet.has(p.accountId))) {
     throw new Error("Invalid Accounts")
   }
   if (accounts.some((a) => a.currency !== input.currency)) {
     throw new Error("Invalid Currency")
   }
 
-  // 3.1 overdraft check
-  for (const leg of input.postings) {
+  // Overdraft check
+  for (const leg of postings) {
     if (leg.amount >= 0n) continue // only debits can overdraw
-
-    const { rows: balances } = await client.query<Balance>(
-      `SELECT amount FROM balances WHERE account_id = $1`,
-      [leg.accountId]
-    )
 
     const account = accounts.find((a) => a.id === leg.accountId)
     if (!account) throw new Error("Invalid Accounts")
 
+    // System accounts have no balance floor, so there is nothing to check here.
+    // Order matters: the type check must precede the lock. The system account
+    // participates in every funding transaction, so locking its balance row would
+    // serialize the entire ledger on a single row.
     if (account.type === "system") continue
+
+    const { rows: balances } = await client.query<{
+      amount: Balance["amount"]
+    }>(`SELECT amount FROM balances WHERE account_id = $1 FOR UPDATE;`, [
+      leg.accountId,
+    ])
 
     const current = balances[0] ? BigInt(balances[0].amount) : 0n
     if (current + leg.amount < 0n) throw new Error("Insufficient funds")
   }
 
-  // 4. INSERT the event (type 'TransactionPosted', v1, payload = postings with amounts as STRINGS)
+  // INSERT the event (type 'TransactionPosted', v1, payload = postings with amounts as STRINGS)
   const eventPayload = JSON.stringify({
     currency: input.currency,
     idempotencyKey: input.idempotencyKey,
-    postings: input.postings.map((p) => ({
+    postings: postings.map((p) => ({
       accountId: p.accountId,
       amount: String(p.amount),
     })),
@@ -84,8 +92,8 @@ export async function postTransaction(
 
   const { global_seq: globalSeq, event_id: eventId } = events[0]
 
-  // 5. for each posting: upsert balances (amount += p.amount, last_event_seq = global_seq)
-  for (const leg of input.postings) {
+  // For each posting: upsert balances (amount += p.amount, last_event_seq = global_seq)
+  for (const leg of postings) {
     await client.query(
       `
         INSERT INTO balances (account_id, amount, last_event_seq)
