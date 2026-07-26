@@ -23,3 +23,7 @@ export function useRollbackClient() {
 
   return () => client
 }
+
+export function getTestPool(): Pool {
+  return new Pool({ connectionString: inject("pgUri") })
+}

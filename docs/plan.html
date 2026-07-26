@@ -432,6 +432,30 @@
           <span class="h">In JavaScript <code>^</code> is bitwise XOR, not exponentiation.</span>
           <span class="b"><code>10 ^ 2 === 8</code>. Power is <code>**</code>. This one compiles, runs, and quietly returns nonsense.</span>
         </div>
+        <div class="item ask">
+          <span class="h">The lost update &mdash; why a read-then-check guard doesn&rsquo;t guard.</span>
+          <span class="b">Read balance &rarr; check it covers the debit &rarr; write is a race. Two concurrent transfers both read 100, both approve an 80 debit, both commit, and the account lands at &minus;60. Reproduced with two connections, each committing. Fixes: <code>SELECT &hellip; FOR UPDATE</code> (second txn blocks, re-reads, rejects &mdash; but serializes hot accounts), an atomic conditional <code>UPDATE &hellip; WHERE amount + delta &gt;= 0</code> checking <code>rowCount</code> (no read-write window at all), or <code>SERIALIZABLE</code> plus retry on serialization failure.</span>
+        </div>
+        <div class="item">
+          <span class="h">Explicit ids don&rsquo;t advance a <code>SERIAL</code> sequence.</span>
+          <span class="b">Seed rows with hardcoded ids and the sequence stays where it was &mdash; the next auto-generated insert hands out an id that already exists and dies on a duplicate key. Same bug bites after restoring a dump. Fix: <code>SELECT setval(pg_get_serial_sequence('t','id'), (SELECT MAX(id) FROM t))</code> after seeding.</span>
+        </div>
+        <div class="item">
+          <span class="h">A leaked client turns an error into a silent hang.</span>
+          <span class="b"><code>pool.end()</code> waits for every checked-out client to come back. Release outside a <code>finally</code> and one thrown query strands a client &mdash; the pool never closes, the runner hangs and is killed, and the real error message never prints. Always release in <code>finally</code>.</span>
+        </div>
+        <div class="item">
+          <span class="h">An uncommitted transaction blocks every other writer.</span>
+          <span class="b">A transaction holds its row locks until <code>COMMIT</code> or <code>ROLLBACK</code>. Forget to end one and any other transaction touching those rows waits &mdash; forever. &ldquo;Idle in transaction&rdquo; connections are one of the most common real Postgres incidents; the symptom is a hang, not an error. Cleanup at the end of a function body never runs on the failure path &mdash; put it in <code>finally</code>.</span>
+        </div>
+        <div class="item">
+          <span class="h">A row lock lives exactly as long as its transaction.</span>
+          <span class="b"><code>SELECT &hellip; FOR UPDATE</code> in autocommit acquires and releases the lock within that one statement, so it protects nothing. Locking only works inside an explicit <code>BEGIN &hellip; COMMIT</code> &mdash; and a race can only be reproduced across <em>separate connections</em>, since one pg connection processes statements sequentially.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">How does money enter a double-entry ledger?</span>
+          <span class="b">Double-entry conserves money &mdash; the sum of all balances is always zero &mdash; so a positive balance anywhere requires a negative one somewhere. Money enters by debiting a <em>source/system</em> account that is allowed to go negative and crediting a customer (asset) account. So the non-negative rule is <strong>per account type</strong>, not global: forbid every account from going negative and you can never fund the system.</span>
+        </div>
         <div class="item">
           <span class="h">Debit and credit are not &ldquo;minus&rdquo; and &ldquo;plus&rdquo;.</span>
           <span class="b">A debit <em>increases</em> an asset account and <em>decreases</em> a liability. That asymmetry is real accounting and a genuine footgun in code &mdash; the argument for storing signed amounts and deriving the debit/credit label for humans at the edge.</span>

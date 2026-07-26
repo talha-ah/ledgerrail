@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg"
 
 import type { Currency } from "@ledgerrail/money"
+import type { Account, Balance, Event } from "../types.js"
 
 interface Posting {
   accountId: number
@@ -30,12 +31,10 @@ export async function postTransaction(
   if (totalAmount !== 0n) throw new Error("Invalid transaction amounts")
 
   // 3. load the referenced accounts; assert each exists and its currency === input.currency
-  const { rows: accounts } = await client.query<{
-    id: number
-    currency: Currency
-  }>(`SELECT id, currency FROM accounts WHERE id = ANY($1)`, [
-    input.postings.map((p) => p.accountId),
-  ])
+  const { rows: accounts } = await client.query<Account>(
+    `SELECT * FROM accounts WHERE id = ANY($1)`,
+    [input.postings.map((p) => p.accountId)]
+  )
 
   const accountsSet = new Set(accounts.map((a) => a.id))
 
@@ -44,6 +43,24 @@ export async function postTransaction(
   }
   if (accounts.some((a) => a.currency !== input.currency)) {
     throw new Error("Invalid Currency")
+  }
+
+  // 3.1 overdraft check
+  for (const leg of input.postings) {
+    if (leg.amount >= 0n) continue // only debits can overdraw
+
+    const { rows: balances } = await client.query<Balance>(
+      `SELECT amount FROM balances WHERE account_id = $1`,
+      [leg.accountId]
+    )
+
+    const account = accounts.find((a) => a.id === leg.accountId)
+    if (!account) throw new Error("Invalid Accounts")
+
+    if (account.type === "system") continue
+
+    const current = balances[0] ? BigInt(balances[0].amount) : 0n
+    if (current + leg.amount < 0n) throw new Error("Insufficient funds")
   }
 
   // 4. INSERT the event (type 'TransactionPosted', v1, payload = postings with amounts as STRINGS)
@@ -55,10 +72,7 @@ export async function postTransaction(
       amount: String(p.amount),
     })),
   })
-  const { rows: events } = await client.query<{
-    global_seq: string
-    event_id: string
-  }>(
+  const { rows: events } = await client.query<Event>(
     `
       INSERT INTO events (event_type, event_version, payload, idempotency_key)
       VALUES ($1, $2, $3, $4)
@@ -71,7 +85,7 @@ export async function postTransaction(
   const { global_seq: globalSeq, event_id: eventId } = events[0]
 
   // 5. for each posting: upsert balances (amount += p.amount, last_event_seq = global_seq)
-  for (const posting of input.postings) {
+  for (const leg of input.postings) {
     await client.query(
       `
         INSERT INTO balances (account_id, amount, last_event_seq)
@@ -81,10 +95,9 @@ export async function postTransaction(
           amount = balances.amount + EXCLUDED.amount, -- EXCLUDED is the INSERT row conflicted
           last_event_seq = EXCLUDED.last_event_seq;
       `,
-      [posting.accountId, posting.amount, globalSeq]
+      [leg.accountId, leg.amount, globalSeq]
     )
   }
 
-  // 6. return { globalSeq, eventId }
-  return { globalSeq, eventId }
+  return { globalSeq: String(globalSeq), eventId }
 }

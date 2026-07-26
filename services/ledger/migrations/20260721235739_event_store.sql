@@ -5,12 +5,25 @@
 
 -- Accounts
 
+CREATE TYPE ACCOUNT_TYPE AS ENUM('system', 'asset');
+
 CREATE TABLE accounts (
   id SERIAL PRIMARY KEY,
   account_number TEXT UNIQUE NOT NULL,
   currency CHAR(3) NOT NULL,
+  type ACCOUNT_TYPE NOT NULL default 'asset',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Balances
+
+CREATE TABLE balances (
+  account_id INT PRIMARY KEY REFERENCES accounts(id),
+  amount BIGINT NOT NULL DEFAULT 0, -- We might not expect huge numbers for normal currencies but for low value currencies like IRAN, we can expect huge numbers
+  last_event_seq BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Events
@@ -23,16 +36,6 @@ CREATE TABLE events (
   payload JSONB NOT NULL,
   idempotency_key TEXT UNIQUE NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Balances
-
-CREATE TABLE balances (
-  account_id INT PRIMARY KEY REFERENCES accounts(id),
-  amount BIGINT NOT NULL DEFAULT 0, -- We might not expect huge numbers for normal currencies but for low value currencies like IRAN, we can expect huge numbers
-  last_event_seq BIGINT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Immutability Trigger

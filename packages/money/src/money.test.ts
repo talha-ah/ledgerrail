@@ -1,5 +1,6 @@
 import fc from "fast-check"
 import { expect, test } from "vitest"
+
 import { money, add, subtract, parseMoney, formatMoney } from "./money.js"
 
 test("Add: Invalid values throws", () => {
