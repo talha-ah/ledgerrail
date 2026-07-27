@@ -159,8 +159,8 @@
 
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">1 of 7</span></div>
-    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">4 of 8</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">1.4</span></div>
+    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">5 of 8</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">1.5</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -315,9 +315,26 @@
         <div class="cp-id">1.4</div>
         <div class="cp-main">
           <h4>Idempotency keys</h4>
-          <p class="cp-sum">A retried command must return the <em>original result</em>, not an error and not a second posting. The behaviour behind the unique constraint.</p>
+          <p class="cp-sum">A retried command returns the <em>original result</em> &mdash; not an error, not a second posting.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>INSERT &hellip; ON CONFLICT (idempotency_key) DO NOTHING RETURNING</code>; zero rows means replay &rarr; look the original up and return its ids, skipping the balance updates entirely</li>
+              <li>Holds under true concurrency, not just sequential retries: two simultaneous calls with one key return identical <code>globalSeq</code>/<code>eventId</code>, exactly one event row exists, and money moves once</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>Catching <code>23505</code> can&rsquo;t work inside a transaction</strong> &mdash; once a statement fails, Postgres aborts the whole transaction and refuses every subsequent query, so the follow-up lookup is impossible without a <code>SAVEPOINT</code>.</li>
+              <li><strong>The immutability trigger rules out the usual trick.</strong> <code>ON CONFLICT &hellip; DO UPDATE SET x = x RETURNING</code> always returns a row &mdash; but <code>UPDATE</code> on <code>events</code> raises. <code>DO NOTHING</code> plus a second <code>SELECT</code> is the only route.</li>
+              <li><strong>Check-then-insert is not a fix</strong> &mdash; two retries both check, both find nothing, both insert. It&rsquo;s an optimization on top of the constraint, never a substitute for it.</li>
+              <li><strong>The clever single-statement CTE version is worse.</strong> One statement shares one snapshot, so the <code>SELECT</code> branch can miss a row committed during the conflict wait; two statements get a fresh snapshot and don&rsquo;t.</li>
+              <li><strong>A test that couldn&rsquo;t catch a double-apply</strong> &mdash; snapshotting balances <em>after</em> the race proved the retry was a no-op but never that the race itself moved money once.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">

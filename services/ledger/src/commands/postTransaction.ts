@@ -84,12 +84,31 @@ export async function postTransaction(
     `
       INSERT INTO events (event_type, event_version, payload, idempotency_key)
       VALUES ($1, $2, $3, $4)
+      ON CONFLICT (idempotency_key) DO NOTHING
       RETURNING global_seq, event_id;
     `,
     ["TransactionPosted", 1, eventPayload, input.idempotencyKey]
   )
-  if (!events[0]) throw new Error("event insert returned no row")
 
+  // If zero rows, it's a replay, return ids, and do NOT touch balances
+  if (!events[0]) {
+    const { rows: replayEvent } = await client.query<Event>(
+      `SELECT global_seq, event_id FROM events WHERE idempotency_key = $1`,
+      [input.idempotencyKey]
+    )
+    if (!replayEvent[0]) {
+      throw new Error(
+        "A replay was detected but the original isn't visible yet."
+      )
+    }
+
+    return {
+      globalSeq: String(replayEvent[0].global_seq),
+      eventId: replayEvent[0].event_id,
+    }
+  }
+
+  // Otherwise, new event, apply balance updates
   const { global_seq: globalSeq, event_id: eventId } = events[0]
 
   // For each posting: upsert balances (amount += p.amount, last_event_seq = global_seq)
