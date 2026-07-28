@@ -17,12 +17,18 @@ export interface Balance {
   updated_at: Date
 }
 
+export interface TransactionPostedPayload {
+  currency: Currency
+  idempotencyKey: string
+  postings: { accountId: number; amount: string }[] // strings on the wire
+}
+
 export interface Event {
   global_seq: string
   event_id: string
   event_type: string
   event_version: number
-  payload: object
+  payload: TransactionPostedPayload
   idempotency_key: string
   created_at: Date
 }

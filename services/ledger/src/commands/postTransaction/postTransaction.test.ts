@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest"
 
-import type { Balance, Event } from "../types.js"
-import { randomString } from "../utils/helpers.js"
-import { useRollbackClient } from "../../test/db.js"
+import type { Balance, Event } from "../../types.js"
+import { randomString } from "../../utils/helpers.js"
+import { useRollbackClient } from "../../../test/db.js"
 import {
   postTransaction,
   type PostTransactionInput,
@@ -58,7 +58,7 @@ describe("PostTransaction", () => {
       expect(BigInt(before) + posting.amount).toBe(BigInt(after.amount))
     }
 
-    const { rows: events } = await client.query<Event>(
+    const { rows: events } = await client.query<Pick<Event, "event_id">>(
       `SELECT * FROM events WHERE idempotency_key = $1`,
       [idempotencyKey]
     )

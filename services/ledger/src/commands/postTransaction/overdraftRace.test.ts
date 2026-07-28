@@ -1,9 +1,9 @@
 import { Pool, type PoolClient } from "pg"
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 
-import type { Balance } from "../types.js"
-import { getTestPool } from "../../test/db.js"
-import { randomString } from "../utils/helpers.js"
+import type { Balance } from "../../types.js"
+import { getTestPool } from "../../../test/db.js"
+import { randomString } from "../../utils/helpers.js"
 import {
   postTransaction,
   type PostTransactionInput,

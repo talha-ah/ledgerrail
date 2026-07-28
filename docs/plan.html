@@ -159,8 +159,8 @@
 
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">1 of 7</span></div>
-    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">5 of 8</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">1.5</span></div>
+    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">6 of 8</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">1.6</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -342,8 +342,24 @@
         <div class="cp-main">
           <h4>Balance projection</h4>
           <p class="cp-sum">Balances derived from events and rebuildable: drop the projection, replay the journal, get identical numbers.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>applyToBalances(event, client)</code> extracted as the single projection function &mdash; the command and the rebuild are two callers of one implementation, and a Kafka consumer becomes the third in Stage 2</li>
+              <li><code>rebuildBalances</code> deletes the projection, replays the journal in <code>global_seq</code> order, and asserts the double-entry invariant <code>&Sigma; = 0</code> across all balances</li>
+              <li>The command projects from the <em>persisted</em> row (<code>RETURNING &hellip; created_at, payload</code>), not from its in-memory input &mdash; so live and replay consume identical bytes</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>Two write paths had already drifted within one checkpoint</strong> &mdash; the live insert timestamped balances with <code>NOW()</code> while the rebuild used the event&rsquo;s own timestamp, so a rebuilt table was never quite the original.</li>
+              <li><strong>A cast that lied about the wire format.</strong> The stored payload holds amounts as strings; casting it to the command&rsquo;s input type claimed <code>bigint</code>, so any arithmetic trusting the type would throw at runtime.</li>
+              <li><strong>A self-check that checked nothing</strong> &mdash; comparing balance <em>row counts</em> before and after a rebuild passes even if every amount is recomputed as zero. Replaced with the &Sigma;&nbsp;=&nbsp;0 invariant.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">

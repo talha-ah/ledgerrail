@@ -1,7 +1,17 @@
 import type { PoolClient } from "pg"
 
 import type { Currency } from "@ledgerrail/money"
-import type { Account, Balance, Event } from "../types.js"
+
+import { applyToBalances } from "../../projections/balances/index.js"
+import type {
+  Event,
+  Account,
+  Balance,
+  TransactionPostedPayload,
+} from "../../types.js"
+
+const EVENT_VERSION = 1
+const EVENT_TYPE = "TransactionPosted"
 
 interface Posting {
   accountId: number
@@ -61,11 +71,10 @@ export async function postTransaction(
     // serialize the entire ledger on a single row.
     if (account.type === "system") continue
 
-    const { rows: balances } = await client.query<{
-      amount: Balance["amount"]
-    }>(`SELECT amount FROM balances WHERE account_id = $1 FOR UPDATE;`, [
-      leg.accountId,
-    ])
+    const { rows: balances } = await client.query<Pick<Balance, "amount">>(
+      `SELECT amount FROM balances WHERE account_id = $1 FOR UPDATE;`,
+      [leg.accountId]
+    )
 
     const current = balances[0] ? BigInt(balances[0].amount) : 0n
     if (current + leg.amount < 0n) throw new Error("Insufficient funds")
@@ -79,23 +88,26 @@ export async function postTransaction(
       accountId: p.accountId,
       amount: String(p.amount),
     })),
-  })
-  const { rows: events } = await client.query<Event>(
+  } satisfies TransactionPostedPayload)
+  const { rows: events } = await client.query<
+    Pick<Event, "global_seq" | "event_id" | "created_at" | "payload">
+  >(
     `
       INSERT INTO events (event_type, event_version, payload, idempotency_key)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (idempotency_key) DO NOTHING
-      RETURNING global_seq, event_id;
+      RETURNING global_seq, event_id, created_at, payload;
     `,
-    ["TransactionPosted", 1, eventPayload, input.idempotencyKey]
+    [EVENT_TYPE, EVENT_VERSION, eventPayload, input.idempotencyKey]
   )
 
   // If zero rows, it's a replay, return ids, and do NOT touch balances
   if (!events[0]) {
-    const { rows: replayEvent } = await client.query<Event>(
-      `SELECT global_seq, event_id FROM events WHERE idempotency_key = $1`,
-      [input.idempotencyKey]
-    )
+    const { rows: replayEvent } = await client.query<
+      Pick<Event, "global_seq" | "event_id">
+    >(`SELECT global_seq, event_id FROM events WHERE idempotency_key = $1`, [
+      input.idempotencyKey,
+    ])
     if (!replayEvent[0]) {
       throw new Error(
         "A replay was detected but the original isn't visible yet."
@@ -103,28 +115,15 @@ export async function postTransaction(
     }
 
     return {
-      globalSeq: String(replayEvent[0].global_seq),
       eventId: replayEvent[0].event_id,
+      globalSeq: String(replayEvent[0].global_seq),
     }
   }
 
   // Otherwise, new event, apply balance updates
-  const { global_seq: globalSeq, event_id: eventId } = events[0]
+  const { event_id: eventId, global_seq: globalSeq } = events[0]
 
-  // For each posting: upsert balances (amount += p.amount, last_event_seq = global_seq)
-  for (const leg of postings) {
-    await client.query(
-      `
-        INSERT INTO balances (account_id, amount, last_event_seq)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (account_id)
-        DO UPDATE SET
-          amount = balances.amount + EXCLUDED.amount, -- EXCLUDED is the INSERT row conflicted
-          last_event_seq = EXCLUDED.last_event_seq;
-      `,
-      [leg.accountId, leg.amount, globalSeq]
-    )
-  }
+  await applyToBalances(events[0], client)
 
   return { globalSeq: String(globalSeq), eventId }
 }
