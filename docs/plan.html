@@ -159,8 +159,8 @@
 
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">1 of 7</span></div>
-    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">6 of 8</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">1.6</span></div>
+    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">7 of 8</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">1.7</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -367,8 +367,25 @@
         <div class="cp-main">
           <h4>Snapshots + replay</h4>
           <p class="cp-sum">Replay from event zero is O(history). Periodic balance snapshots at a sequence number make rebuild bounded.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>balance_snapshots</code> keyed <code>(account_id, as_of_event_seq)</code> &mdash; history retained, so any snapshot point can be rebuilt from and a bad one can be skipped</li>
+              <li><code>balancesSnapshot</code> stamps every account with a single global cursor read once from <code>MAX(global_seq)</code>; <code>rebuildBalances</code> seeds from the latest snapshot and replays only events beyond it</li>
+              <li>Regression test: two account pairs transacting at different times, rebuilt and compared before/after &mdash; guards the cursor semantics that the earlier bug depended on</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>The writer and reader disagreed about what a cursor meant.</strong> Snapshots stored a per-account <code>last_event_seq</code> while the rebuild filtered on the global <code>MAX</code> &mdash; so every account not at that maximum was silently dropped, its snapshot ignored and its events never replayed.</li>
+              <li><strong>&Sigma;&nbsp;=&nbsp;0 passed anyway</strong>, because the surviving accounts netted to zero on their own. Reproduced with four accounts: two vanished, the invariant stayed green.</li>
+              <li><strong>Seeding used additive upsert semantics</strong> copy-pasted from the event projector, where adding a delta is correct. A snapshot amount is absolute; if that branch had ever been reachable it would have doubled every balance.</li>
+              <li>Two suites were byte-identical duplicates of each other, and the snapshot test asserted only that taking a snapshot didn&rsquo;t disturb balances &mdash; never that a snapshot row was written or that the bounded rebuild agreed with a full one.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">
@@ -519,6 +536,10 @@
           <span class="h">Example tests only cover the cases you thought of.</span>
           <span class="b">A single property-based round-trip test (fast-check) caught sign and padding bugs that six hand-written examples missed. Assert the <em>invariant</em>, not a list of samples.</span>
         </div>
+        <div class="item ask">
+          <span class="h">A global invariant can be satisfied by a subset.</span>
+          <span class="b">A rebuild silently dropped two of four accounts, and the &Sigma;&nbsp;=&nbsp;0 check still passed &mdash; the surviving pair netted to zero on its own. An aggregate assertion proves a property of whatever rows are <em>present</em>; it says nothing about rows that should have been there. Pair every aggregate check with a <strong>cardinality</strong> check, or compare against a captured before-state.</span>
+        </div>
         <div class="item">
           <span class="h">A green test can encode the bug.</span>
           <span class="b">Write the assertion after the implementation and you assert whatever the code currently does &mdash; which is how <code>parseMoney</code> shipped a test proving $100 was $10.</span>
@@ -554,6 +575,10 @@
         <div class="item">
           <span class="h">Enforce invariants where they can&rsquo;t be bypassed.</span>
           <span class="b">Event immutability is a database trigger, not a code convention &mdash; so even a buggy service can&rsquo;t rewrite history.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">Three durability contracts in one system.</span>
+          <span class="b"><strong>Events are immutable</strong> &mdash; the source of truth, append-only, enforced by the database. <strong>Projections are rebuildable</strong> &mdash; delete them and replay the journal to get identical state. <strong>Snapshots are disposable</strong> &mdash; pure optimization, regenerable from events at any time. Knowing which category a table falls into tells you what you&rsquo;re allowed to do to it, and it is the clearest way to explain what event sourcing actually buys.</span>
         </div>
       </div>
 

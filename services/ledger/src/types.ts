@@ -17,6 +17,13 @@ export interface Balance {
   updated_at: Date
 }
 
+export interface BalanceSnapshot {
+  account_id: number
+  amount: string
+  as_of_event_seq: string
+  created_at: Date
+}
+
 export interface TransactionPostedPayload {
   currency: Currency
   idempotencyKey: string
