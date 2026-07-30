@@ -11,7 +11,7 @@ export interface Account {
 
 export interface Balance {
   account_id: number
-  amount: string
+  amount: bigint
   last_event_seq: string
   created_at: Date
   updated_at: Date

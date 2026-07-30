@@ -8,7 +8,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "migration:create": "tsx scripts/create-migration.ts"
+    "migration:create": "tsx scripts/create-migration.ts",
+    "demo": "tsx scripts/demo.ts",
+    "drill:crash": "tsx scripts/drill-crash.ts"
   },
   "keywords": [],
   "author": "",

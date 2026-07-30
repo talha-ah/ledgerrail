@@ -158,9 +158,9 @@
   </header>
 
   <div class="stat-strip">
-    <div class="stat"><span class="k">Current stage</span><span class="v accent">1 of 7</span></div>
-    <div class="stat"><span class="k">Stage 1 progress</span><span class="v">7 of 8</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">1.7</span></div>
+    <div class="stat"><span class="k">Current stage</span><span class="v accent">2 of 7</span></div>
+    <div class="stat"><span class="k">Stage 1</span><span class="v">complete</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">2.0</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -170,8 +170,8 @@
       <span class="eyebrow">each independently demoable</span>
     </div>
     <div class="rail">
-      <div class="rail-item now"><span class="n">01</span><span class="t">Ledger core</span></div>
-      <div class="rail-item"><span class="n">02</span><span class="t">Outbox &rarr; Kafka</span></div>
+      <div class="rail-item done"><span class="n">01</span><span class="t">Ledger core</span></div>
+      <div class="rail-item now"><span class="n">02</span><span class="t">Outbox &rarr; Kafka</span></div>
       <div class="rail-item"><span class="n">03</span><span class="t">Payment saga</span></div>
       <div class="rail-item"><span class="n">04</span><span class="t">Resilience</span></div>
       <div class="rail-item"><span class="n">05</span><span class="t">Observability</span></div>
@@ -393,8 +393,24 @@
         <div class="cp-main">
           <h4>Demo script + Stage 1 failure drill</h4>
           <p class="cp-sum">Kill the process mid-transfer and replay a duplicate idempotency key. The invariant must hold: no partial posting, no double-post.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>pnpm demo</code> &mdash; the whole architecture as one runnable narrative: fund, transfer, reject an overdraft, replay a key and get the same event back, snapshot, wipe balances, rebuild to identical numbers. Amounts printed through <code>formatMoney</code>.</li>
+              <li><code>pnpm drill:crash</code> &mdash; a proxy around the injected client hard-kills the process between the event insert and the balance write. The parent then verifies from a fresh connection that no event with that key exists, balances are untouched, and the rebuild still reproduces correct state.</li>
+              <li>Fault injection needed <em>no</em> change to the ledger &mdash; wrapping the injected client was enough, which is the dependency-injection decision paying off a third time (testability, then outbox composability, now drills).</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>A drill that proved nothing, twice.</strong> First the child ran under bare <code>node</code> and died on module resolution; then the parent didn&rsquo;t await the child, so the &ldquo;after&rdquo; reading happened before anything was attempted. Both produced reassuring, meaningless output &mdash; hence asserting the exit code is <em>137</em>, not merely non-zero.</li>
+              <li><strong>The child re-ran setup and created its own accounts</strong>, so the parent was verifying accounts nothing had touched. Identifiers must be passed down, and assertions scoped to them.</li>
+              <li><strong>A third leaked client.</strong> <code>connectDB</code> called <code>pool.connect()</code> and never released, so <code>pool.end()</code> hung forever &mdash; the demo did all its work correctly and then refused to exit. A health check needs <code>pool.query("SELECT 1")</code>, not a checked-out connection.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
     </div>
@@ -435,6 +451,10 @@
         <div class="item ask">
           <span class="h">&ldquo;How do you roll back a migration?&rdquo;</span>
           <span class="b">You usually don&rsquo;t. Production practice is <strong>forward-only</strong>: write a new migration that fixes forward. A <code>down</code> that drops a column is a data-loss event, and rolling back against live writes is often worse than the bug.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">Why can&rsquo;t you edit a migration that has already run?</span>
+          <span class="b">Runners track by <strong>filename</strong>, not content &mdash; so an edited file is skipped forever on any database that already recorded it, and its schema silently diverges from the file. Worse, you can&rsquo;t fix it forward: an <code>ALTER TABLE</code> that repairs the drifted database fails on a fresh one, because the edited file already creates that column. The only consistent state is to recreate the drifted database. A throwaway test container hides this completely, since it is always built from current files.</span>
         </div>
         <div class="item">
           <span class="h">Postgres has transactional DDL &mdash; most databases don&rsquo;t.</span>
@@ -499,6 +519,10 @@
         <div class="item ask">
           <span class="h">The lost update &mdash; why a read-then-check guard doesn&rsquo;t guard.</span>
           <span class="b">Read balance &rarr; check it covers the debit &rarr; write is a race. Two concurrent transfers both read 100, both approve an 80 debit, both commit, and the account lands at &minus;60. Reproduced with two connections, each committing. Fixes: <code>SELECT &hellip; FOR UPDATE</code> (second txn blocks, re-reads, rejects &mdash; but serializes hot accounts), an atomic conditional <code>UPDATE &hellip; WHERE amount + delta &gt;= 0</code> checking <code>rowCount</code> (no read-write window at all), or <code>SERIALIZABLE</code> plus retry on serialization failure.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">A sequence is monotonic, not gapless.</span>
+          <span class="b">Identity values are allocated before a conflict is detected and are never returned, so <code>ON CONFLICT DO NOTHING</code>, rollbacks and crashes all leave holes &mdash; an idempotent retry visibly burns a <code>global_seq</code>. Ordering by it is safe; inferring &ldquo;an event is missing&rdquo; from a gap is not.</span>
         </div>
         <div class="item">
           <span class="h">Explicit ids don&rsquo;t advance a <code>SERIAL</code> sequence.</span>

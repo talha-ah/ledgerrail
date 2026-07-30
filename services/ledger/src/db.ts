@@ -20,9 +20,7 @@ export function getPool(): Pool {
 
 export async function connectDB(): Promise<void> {
   try {
-    const localPool = getPool() // Initialize the pool
-
-    await localPool.connect()
+    await getPool().query("SELECT 1")
     console.log("Connected to the database successfully.")
   } catch (err) {
     console.error("Error connecting to the database:", err)

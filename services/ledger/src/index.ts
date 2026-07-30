@@ -7,18 +7,21 @@ import { connectDB, getPool } from "./db.js"
 import { runMigrations } from "./migrate.js"
 import { loadConfig } from "./utils/loadConfig.js"
 
-// Check required config - before anything else
-loadConfig()
-
-// const PORT = parseInt(process.env.PORT || "3000")
-;(async () => {
-  if (process.env.NODE_ENV === "test") return
+export async function bootstrap() {
+  // Check required config - before anything else
+  loadConfig()
 
   // Connect database
   await connectDB()
 
   // Run migrations
   await runMigrations(getPool())
+}
 
-  // Start server at ${PORT}
-})()
+// // const PORT = parseInt(process.env.PORT || "3000")
+// ;(async () => {
+//   if (process.env.NODE_ENV === "test") return
+
+//   await bootstrap()
+//   // Start server at ${PORT}
+// })()
