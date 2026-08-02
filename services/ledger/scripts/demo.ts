@@ -76,7 +76,7 @@ async function getBalances(
   logBalance(balances, asset2Id, "Asset B")
 }
 
-async function demo() {
+async function main() {
   // Bootstrap application
   await bootstrap()
 
@@ -157,4 +157,4 @@ async function demo() {
   await pool.end()
 }
 
-demo()
+main()

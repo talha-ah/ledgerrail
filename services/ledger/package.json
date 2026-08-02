@@ -10,7 +10,8 @@
     "test": "vitest run",
     "migration:create": "tsx scripts/create-migration.ts",
     "demo": "tsx scripts/demo.ts",
-    "drill:crash": "tsx scripts/drill-crash.ts"
+    "drill:crash": "tsx scripts/drill-crash.ts",
+    "kafka": "tsx scripts/kafka-use.ts"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +20,7 @@
   "dependencies": {
     "@ledgerrail/money": "workspace:*",
     "dotenv": "^17.4.2",
+    "kafkajs": "^2.2.4",
     "pg": "^8.22.0"
   },
   "devDependencies": {

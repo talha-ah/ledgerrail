@@ -160,7 +160,7 @@
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">2 of 7</span></div>
     <div class="stat"><span class="k">Stage 1</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">2.0</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">2.1</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -668,6 +668,14 @@
           <span class="h">At-least-once plus idempotent consumers, over exactly-once.</span>
           <span class="b">Correctness moves into your own inbox table instead of the broker&rsquo;s transactional machinery. Simpler to operate, and you can explain exactly where duplicates die.</span>
         </div>
+        <div class="item ask">
+          <span class="h">What does <code>fromBeginning</code> actually do?</span>
+          <span class="b">It only applies when the consumer group has <em>no committed offset</em>. Once a group has a cursor it always resumes from it, regardless of the flag &mdash; so <code>fromBeginning: true</code> means &ldquo;where to start if I&rsquo;m new&rdquo;, not &ldquo;replay everything every run&rdquo;. To genuinely re-read a topic you use a new group id or reset the offsets.</span>
+        </div>
+        <div class="item">
+          <span class="h">A consumer group is a named cursor, not an owner.</span>
+          <span class="b">Messages don&rsquo;t belong to groups &mdash; the topic is one shared append-only log and each group tracks its own position in it. Ten groups read the same bytes independently. It is precisely the <code>last_event_seq</code> cursor on our balances projection, except the broker stores it instead of us.</span>
+        </div>
         <div class="item">
           <span class="h">Quorum is a majority, not a count.</span>
           <span class="b">A Raft cluster stays available while a majority survives. Kill 2 of 3 brokers and writes stall &mdash; that&rsquo;s the consistency/availability line made visible.</span>
@@ -768,7 +776,7 @@
       <div><span class="k">Language</span><span class="v">TypeScript / Node.js</span></div>
       <div><span class="k">Source of truth</span><span class="v">Postgres 18</span></div>
       <div><span class="k">Migrations</span><span class="v">Plain SQL + own runner</span></div>
-      <div><span class="k">Event backbone</span><span class="v">Redpanda (Kafka API)</span></div>
+      <div><span class="k">Event backbone</span><span class="v">Redpanda now, Apache Kafka (KRaft) later</span></div>
       <div><span class="k">Cache</span><span class="v">Redis</span></div>
       <div><span class="k">Resilience</span><span class="v">cockatiel</span></div>
       <div><span class="k">Observability</span><span class="v">OpenTelemetry &rarr; Grafana LGTM</span></div>

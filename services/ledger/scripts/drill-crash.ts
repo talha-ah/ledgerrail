@@ -5,8 +5,8 @@ import type { Pool, PoolClient } from "pg"
 import { formatMoney } from "@ledgerrail/money"
 
 import { bootstrap } from "../src/index.js"
+import type { Balance } from "../src/types.js"
 import { getPool, transaction } from "../src/db.js"
-import type { Event, Balance } from "../src/types.js"
 import { randomString } from "../src/utils/helpers.js"
 import { rebuildBalances } from "../src/projections/balances/index.js"
 import {
@@ -79,7 +79,7 @@ function crashOn(client: PoolClient, marker: string): PoolClient {
   })
 }
 
-async function drillCrash() {
+async function main() {
   // Bootstrap application
   await bootstrap()
 
@@ -162,4 +162,4 @@ async function drillCrash() {
   await pool.end()
 }
 
-drillCrash()
+main()

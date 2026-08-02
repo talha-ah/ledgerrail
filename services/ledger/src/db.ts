@@ -21,9 +21,19 @@ export function getPool(): Pool {
 export async function connectDB(): Promise<void> {
   try {
     await getPool().query("SELECT 1")
-    console.log("Connected to the database successfully.")
+    console.log("[Database] Connected")
   } catch (err) {
-    console.error("Error connecting to the database:", err)
+    console.error("[Database] Error connecting:", err)
+    throw err
+  }
+}
+
+export async function disconnectDB(): Promise<void> {
+  try {
+    const pool = getPool()
+    await pool.end()
+  } catch (err) {
+    console.error("[Database] Error disconnecting:", err)
     throw err
   }
 }

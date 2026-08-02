@@ -3,19 +3,18 @@ import * as path from "path"
 
 dotenv.config({ path: path.resolve(process.cwd(), "../../.env") })
 
-import { connectDB, getPool } from "./db.js"
 import { runMigrations } from "./migrate.js"
 import { loadConfig } from "./utils/loadConfig.js"
+import { getPool, connectDB, disconnectDB } from "./db.js"
 
 export async function bootstrap() {
-  // Check required config - before anything else
   loadConfig()
-
-  // Connect database
   await connectDB()
-
-  // Run migrations
   await runMigrations(getPool())
+}
+
+export async function shutdown() {
+  await disconnectDB()
 }
 
 // // const PORT = parseInt(process.env.PORT || "3000")

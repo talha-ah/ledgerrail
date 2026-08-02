@@ -8,7 +8,7 @@ const MIGRATIONS_DIR = path.join(
   "migrations"
 )
 
-async function createMigration() {
+async function main() {
   // 1. Get the migration name from command line arguments
   const args = process.argv.slice(2)
   const migrationName = args[0]
@@ -52,4 +52,4 @@ async function createMigration() {
   }
 }
 
-createMigration()
+main()
