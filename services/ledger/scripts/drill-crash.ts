@@ -124,6 +124,10 @@ async function main() {
   const events = await getEvents(idempotencyKey, pool)
   await getBalances(systemId, assetId, pool)
 
+  const { rows: beforeOutbox } = await pool.query<{ n: number }>(
+    "SELECT COUNT(*)::int as n FROM outbox"
+  )
+
   // 2. spawn self with --child, await its exit (expect a non-zero code)
   console.log(`[Parent] Spawning myself (PID: ${process.pid})`)
   const child = spawn(
@@ -150,7 +154,19 @@ async function main() {
   await getBalances(systemId, assetId, pool)
 
   // 4. assert both unchanged, print the comparison
-  if (events !== afterEvents) throw new Error("Something failed")
+  if (events !== afterEvents)
+    throw new Error(
+      `expected ${events} events after the crash, found ${afterEvents}`
+    )
+
+  const { rows: afterOutbox } = await pool.query<{ n: number }>(
+    "SELECT COUNT(*)::int as n FROM outbox"
+  )
+  if (beforeOutbox[0]?.n !== afterOutbox[0]?.n) {
+    throw new Error(
+      `expected ${beforeOutbox[0]?.n} outbox after the crash, found ${afterOutbox[0]?.n}`
+    )
+  }
 
   // 5. run rebuildBalances and show state is still correct
   console.log("Rebuilding balances")

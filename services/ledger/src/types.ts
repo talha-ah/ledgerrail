@@ -31,11 +31,20 @@ export interface TransactionPostedPayload {
 }
 
 export interface Event {
-  global_seq: string
+  global_seq: bigint
   event_id: string
   event_type: string
   event_version: number
   payload: TransactionPostedPayload
   idempotency_key: string
+  created_at: Date
+}
+
+export interface Outbox {
+  event_id: string
+  global_seq: bigint
+  topic: string
+  partition_key: string
+  published_at?: Date
   created_at: Date
 }

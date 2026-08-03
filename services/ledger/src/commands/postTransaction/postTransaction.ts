@@ -2,6 +2,7 @@ import type { PoolClient } from "pg"
 
 import type { Currency } from "@ledgerrail/money"
 
+import { TOPICS, transactionKey } from "../../kafka/topics.js"
 import { applyToBalances } from "../../projections/balances/index.js"
 import type {
   Event,
@@ -122,6 +123,14 @@ export async function postTransaction(
 
   // Otherwise, new event, apply balance updates
   const { event_id: eventId, global_seq: globalSeq } = events[0]
+
+  await client.query(
+    `
+      INSERT INTO outbox (event_id, global_seq, topic, partition_key)
+      VALUES ($1, $2, $3, $4)
+    `,
+    [eventId, globalSeq, TOPICS.LEDGER_EVENTS, transactionKey(eventId)]
+  )
 
   await applyToBalances(events[0], client)
 

@@ -160,7 +160,7 @@
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">2 of 7</span></div>
     <div class="stat"><span class="k">Stage 1</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">2.1</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">2.2</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -411,6 +411,122 @@
           </div>
         </div>
         <div class="cp-status"><span class="chip ok">Done</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Stage 2 &mdash; Outbox &rarr; Kafka &rarr; projections</h2>
+      <span class="eyebrow">checkpoint ledger</span>
+    </div>
+
+    <div class="ledger">
+
+      <div class="cp">
+        <div class="cp-id">2.0</div>
+        <div class="cp-main">
+          <h4>Kafka plumbing</h4>
+          <p class="cp-sum">Redpanda and Console in Compose; a smoke script that produces and consumes one keyed message.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li>Lazily-memoized Kafka client; admin/producer/consumer factories that <em>return handles</em> rather than stash module singletons, so several consumer groups can coexist</li>
+              <li>Deterministic wait &mdash; a promise resolved from the message handler, raced against a timeout &mdash; replacing a fixed sleep: 32ms instead of 1000ms, and it proves delivery rather than assuming it</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>Advertised listeners, twice.</strong> The broker told clients to reconnect to an address unreachable from where they were &mdash; once for the app, once for Console. Both times the bootstrap <em>succeeded</em> and everything after it failed, which is the signature to recognise.</li>
+              <li><strong>A <code>!</code> hid a missing env var</strong> until it surfaced eight frames deep inside kafkajs as <code>broker at index 0 is invalid "undefined"</code>. Kafka broker lists are <code>host:port</code>, never URLs.</li>
+              <li>Throwing inside <code>eachMessage</code> doesn&rsquo;t skip a message &mdash; the offset isn&rsquo;t committed and it retries forever, blocking the partition. A poison pill built by accident.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">2.1</div>
+        <div class="cp-main">
+          <h4>Transactional outbox</h4>
+          <p class="cp-sum">The command records the intent to publish in the same transaction as the event, so a crash can never leave one without the other.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>outbox</code> keyed by <code>event_id</code>, with <code>global_seq</code> denormalised for ordering, an explicit <code>topic</code> and self-describing <code>partition_key</code>, and a nullable <code>published_at</code> &mdash; which answers both &ldquo;sent?&rdquo; and &ldquo;stuck how long?&rdquo;</li>
+              <li>Partial index over unpublished rows only, so it stays small however large the table grows</li>
+              <li>No outbox row on the idempotent-replay path &mdash; the intent was already recorded &mdash; giving the invariant that an event row exists <em>iff</em> its outbox row does</li>
+              <li>Decision recorded in <a href="decisions/0003-outbox-and-event-partitioning.md">ADR 0003</a>: one message per transaction keyed <code>transaction:&lt;event_id&gt;</code>, per-account ordering deliberately not bought</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>A foreign key to a non-unique column</strong> &mdash; <code>REFERENCES events(event_type)</code> cannot work; an FK must point at a unique or primary key.</li>
+              <li><strong>Keying by event type would have meant one partition forever</strong> &mdash; same key, same hash, same slot: total ordering with zero parallelism.</li>
+              <li><strong>The drill asserted the outbox was globally empty.</strong> It passed only because the table was new; one <code>pnpm demo</code> later there were five rows and it would have failed a working drill. Replaced with a before/after delta.</li>
+              <li>The missing semicolon after <code>CREATE TABLE</code>, for the second time.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">2.2</div>
+        <div class="cp-main">
+          <h4>The relay</h4>
+          <p class="cp-sum">A publisher that claims unpublished outbox rows, produces them to Kafka, and marks them sent &mdash; the seam where at-least-once delivery is born.</p>
+        </div>
+        <div class="cp-status"><span class="chip now">Current</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">2.3</div>
+        <div class="cp-main">
+          <h4>Projection behind the log</h4>
+          <p class="cp-sum">A consumer calls <code>applyToBalances</code>; the command stops touching balances, and the temporary import is finally deleted.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">2.4</div>
+        <div class="cp-main">
+          <h4>Inbox &amp; deduplication</h4>
+          <p class="cp-sum">At-least-once means duplicates are guaranteed, and <code>+=</code> applied twice is wrong money. Correctness moves into our own table rather than the broker.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">2.5</div>
+        <div class="cp-main">
+          <h4>Dead letter queue</h4>
+          <p class="cp-sum">A message that can never be processed must stop blocking everything behind it.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">2.6</div>
+        <div class="cp-main">
+          <h4>Schema evolution</h4>
+          <p class="cp-sum">A v2 event alongside v1, and a consumer that must handle both &mdash; what <code>event_version</code> was reserved for since 1.2.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">2.7</div>
+        <div class="cp-main">
+          <h4>Stage 2 drills</h4>
+          <p class="cp-sum">Kill the relay mid-publish; poison a message into the DLQ; lose Raft quorum by killing 2 of 3 brokers; pause a consumer and watch lag build, then catch up.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
       </div>
 
     </div>
@@ -671,6 +787,14 @@
         <div class="item ask">
           <span class="h">What does <code>fromBeginning</code> actually do?</span>
           <span class="b">It only applies when the consumer group has <em>no committed offset</em>. Once a group has a cursor it always resumes from it, regardless of the flag &mdash; so <code>fromBeginning: true</code> means &ldquo;where to start if I&rsquo;m new&rdquo;, not &ldquo;replay everything every run&rdquo;. To genuinely re-read a topic you use a new group id or reset the offsets.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">Offsets, water marks and lag.</span>
+          <span class="b">An <strong>offset</strong> is a message&rsquo;s position within a <em>partition</em>, starting at 0. The <strong>high water mark</strong> is the end of the log &mdash; strictly, the highest offset replicated to all in-sync replicas, which is why records can exist on a leader but stay invisible to consumers until replicated. The <strong>low water mark</strong> is the earliest offset still retained. <strong>Lag = high water mark &minus; committed offset</strong>: how far behind a group is, and the number you alert on.</span>
+        </div>
+        <div class="item">
+          <span class="h">Kafka stores consumer offsets in a Kafka topic.</span>
+          <span class="b"><code>__consumer_offsets</code> holds a record keyed by (group, topic, partition) with the committed offset as its value. Its cleanup policy is <code>compact</code>, not <code>delete</code> &mdash; compaction keeps only the latest value per key, so the topic remembers every group&rsquo;s position forever without growing unboundedly. That is also what lets a topic act as a key-value store rather than a stream.</span>
         </div>
         <div class="item">
           <span class="h">A consumer group is a named cursor, not an owner.</span>

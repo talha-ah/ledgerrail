@@ -97,7 +97,7 @@ describe("Apply balance", () => {
 
   it("Replay events", async () => {
     const event: Pick<Event, "global_seq" | "created_at" | "payload"> = {
-      global_seq: "100",
+      global_seq: 100n,
       created_at: new Date(),
       payload: {
         idempotencyKey: randomString(),

@@ -17,10 +17,10 @@ export async function shutdown() {
   await disconnectDB()
 }
 
-// // const PORT = parseInt(process.env.PORT || "3000")
-// ;(async () => {
-//   if (process.env.NODE_ENV === "test") return
+// const PORT = parseInt(process.env.PORT || "3000")
+;(async () => {
+  if (process.env.NODE_ENV === "test") return
 
-//   await bootstrap()
-//   // Start server at ${PORT}
-// })()
+  await bootstrap()
+  // Start server at ${PORT}
+})()
