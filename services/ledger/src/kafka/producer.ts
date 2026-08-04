@@ -1,7 +1,8 @@
 import { getKafka } from "./client.js"
+import type { EventEnvelope } from "./types.js"
 
 export interface ProducerHandle {
-  send(topic: string, key: string, value: unknown): Promise<void>
+  send(topic: string, key: string, value: EventEnvelope): Promise<void>
   disconnect(): Promise<void>
 }
 
@@ -16,6 +17,9 @@ export async function createProducer(): Promise<ProducerHandle> {
         messages: [{ key, value: JSON.stringify(value) }],
       })
     },
-    disconnect: () => producer.disconnect(),
+    disconnect: async () => {
+      await producer.disconnect()
+      console.log("[PRODUCER] Disconnected")
+    },
   }
 }

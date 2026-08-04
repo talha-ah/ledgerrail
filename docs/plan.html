@@ -160,7 +160,7 @@
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">2 of 7</span></div>
     <div class="stat"><span class="k">Stage 1</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">2.2</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">2.3</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -480,8 +480,26 @@
         <div class="cp-main">
           <h4>The relay</h4>
           <p class="cp-sum">A publisher that claims unpublished outbox rows, produces them to Kafka, and marks them sent &mdash; the seam where at-least-once delivery is born.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>publishBatch(pool, producer, limit)</code> takes its dependencies; <code>main()</code> owns bootstrap, the drain-until-empty loop and lifecycle, so scheduling stays a deployment decision</li>
+              <li>Joins to <code>events</code> for the payload, orders by <code>global_seq</code>, and publishes an envelope carrying <code>event_id</code>, <code>event_type</code> and <code>event_version</code> &mdash; everything a consumer needs to dedup, dispatch and upcast</li>
+              <li>Injecting <code>ProducerHandle</code> means the relay is tested against a fake producer with no broker at all: the interesting logic is which rows are picked, in what order, and which get marked</li>
+              <li>Produce-then-mark recorded in <a href="decisions/0003-outbox-and-event-partitioning.md">ADR 0003</a> as Decision 5 &mdash; the two failure modes are not symmetric, so we choose the recoverable one</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>A test that couldn&rsquo;t tell &ldquo;published&rdquo; from &ldquo;marked published&rdquo;.</strong> The fake producer captured every message and nothing inspected them &mdash; deleting the <code>send</code> call entirely would still have passed.</li>
+              <li><strong>The type parser was registered where the tests never loaded it.</strong> First in <code>index.ts</code>, then in <code>db.ts</code> &mdash; neither is in the test import graph, so tests decoded <code>BIGINT</code> as string while runtime decoded <code>bigint</code>. A green suite certifying behaviour production didn&rsquo;t have. Fixed via <code>setupFiles</code>, which runs in the worker, unlike <code>globalSetup</code>.</li>
+              <li><strong>A generic is a cast, not a check.</strong> <code>query&lt;Outbox&gt;</code> promised an <code>event_id</code> the SELECT never projected, so the <code>UPDATE</code> matched zero rows and the relay would have republished forever.</li>
+              <li>Publishing the event <em>id</em> instead of the payload; <code>WHERE topic is $1</code>; and an exported <code>relay()</code> nothing ever called &mdash; the bootstrap output came from an import side effect.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip now">Current</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">
@@ -490,7 +508,7 @@
           <h4>Projection behind the log</h4>
           <p class="cp-sum">A consumer calls <code>applyToBalances</code>; the command stops touching balances, and the temporary import is finally deleted.</p>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip now">Current</span></div>
       </div>
 
       <div class="cp">
@@ -776,6 +794,10 @@
           <span class="h">&ldquo;Why not two-phase commit?&rdquo;</span>
           <span class="b">You can&rsquo;t 2PC across a third-party API &mdash; there is no prepare phase to enrol a bank in. SAGA with compensations is the only real option, and the tradeoff you accept is eventual consistency windows.</span>
         </div>
+        <div class="item ask">
+          <span class="h">Why is delivery at-least-once and not exactly-once?</span>
+          <span class="b">There is no ordering of &ldquo;produce to Kafka&rdquo; and &ldquo;mark the outbox row published&rdquo; that avoids both loss and duplication, because Kafka and Postgres cannot commit together. Mark first and a crash loses the message forever; produce first and a crash republishes it. We chose produce-first, so duplicates are guaranteed and absorbing them becomes the consumer&rsquo;s job &mdash; which is the entire justification for an inbox.</span>
+        </div>
         <div class="item">
           <span class="h">The dual-write problem.</span>
           <span class="b">Committing to the database and publishing to a broker cannot be atomic &mdash; crash between them and you&rsquo;ve either lost an event or published a lie. The transactional outbox collapses both into one commit.</span>
@@ -783,6 +805,14 @@
         <div class="item">
           <span class="h">At-least-once plus idempotent consumers, over exactly-once.</span>
           <span class="b">Correctness moves into your own inbox table instead of the broker&rsquo;s transactional machinery. Simpler to operate, and you can explain exactly where duplicates die.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">Three options for a message you can&rsquo;t handle.</span>
+          <span class="b"><strong>Throw</strong> &mdash; the offset isn&rsquo;t committed, so it retries forever and blocks the partition. Correct for <em>transient</em> failures, catastrophic for permanent ones. <strong>Skip silently</strong> &mdash; the offset commits and the message vanishes: silent data loss, the worst outcome, because nothing surfaces. <strong>Skip loudly</strong> &mdash; commit the offset but record it: log topic, partition, offset and key, bump a metric, and route the message somewhere it can be inspected. That third one is what a dead letter queue is.</span>
+        </div>
+        <div class="item">
+          <span class="h">Transient and permanent failures need opposite responses.</span>
+          <span class="b">A database outage or a lock timeout <em>will</em> succeed on retry, so throwing is right and a briefly blocked partition is the price of not losing data. Malformed JSON or an unknown event version will <em>never</em> succeed, so retrying is the poison pill. Same exception mechanism, opposite correct behaviour &mdash; which is why &ldquo;catch everything and skip&rdquo; is as wrong as &ldquo;let everything throw&rdquo;.</span>
         </div>
         <div class="item ask">
           <span class="h">What does <code>fromBeginning</code> actually do?</span>

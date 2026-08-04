@@ -94,6 +94,39 @@ keying strategy is visible in the data itself. Key construction lives in one hel
 a mismatch such as `txn:` vs `transaction:` would silently route to a different partition
 and quietly void whatever ordering was assumed, with no error.
 
+## Decision 5 — The relay produces first, then marks published
+
+The relay does two things per row: produce the message to Kafka, and set `published_at` in
+Postgres. These are two systems, so they cannot commit together — the same constraint that
+motivated the outbox in the first place, reappearing one layer down.
+
+There is no ordering of those two operations that avoids **both** loss and duplication:
+
+- **Mark first, then produce.** A crash in the gap leaves a row marked published that was
+  never sent. The relay will never look at it again, so the event is lost permanently and
+  silently — the projection simply never learns about it. Unrecoverable without a manual
+  audit comparing `events` to the topic.
+- **Produce first, then mark.** A crash in the gap leaves a published message and an
+  unmarked row. The relay republishes it on the next run, so the message is delivered twice.
+  Recoverable, because a duplicate can be detected and discarded downstream.
+
+We produce first. Delivery is therefore **at-least-once**, and duplicates are guaranteed to
+happen eventually rather than being a rare edge case.
+
+The reasoning is that these two failure modes are not symmetric. A lost event is
+unrecoverable and invisible; a duplicate event is recoverable and detectable. Given a choice
+between a failure the system can absorb and one it cannot, we take the absorbable one.
+
+This is the entire justification for the inbox in 2.4: it is not defensive programming
+against an unlikely event, it is the required counterpart to a deliberate choice made here.
+Note also that `applyToBalances` uses `amount = amount + delta`, which is commutative but
+**not idempotent** — applying the same event twice produces a wrong balance. Duplicate
+suppression is therefore load-bearing for correctness, not merely tidy.
+
+Wrapping produce-and-mark in a database transaction was considered and rejected: Postgres
+cannot roll back a Kafka send, so the transaction would imply an atomicity that does not
+exist while adding real overhead. A single `UPDATE` is already atomic.
+
 ## Consequences
 
 - **Consumers must be idempotent.** At-least-once delivery is a deliberate choice, so

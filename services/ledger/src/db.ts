@@ -1,5 +1,7 @@
 import { Pool, type PoolClient, type QueryResult } from "pg"
 
+import "./pgTypes.js"
+
 let pool: Pool | null = null
 
 export function getPool(): Pool {

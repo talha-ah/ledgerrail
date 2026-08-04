@@ -75,7 +75,7 @@ describe("Post Transaction", () => {
     expect(outbox).toHaveLength(1)
     expect(outbox[0]?.published_at).toBeNull()
     expect(outbox[0]?.partition_key).toBe(`transaction:${result.eventId}`)
-    expect(outbox[0]?.global_seq).toBe(result.globalSeq)
+    expect(outbox[0]?.global_seq).toBe(BigInt(result.globalSeq))
   })
 
   it("Invalid Accounts", async () => {

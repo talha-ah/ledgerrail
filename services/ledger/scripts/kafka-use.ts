@@ -32,7 +32,19 @@ async function main() {
   })
 
   const producer = await createProducer()
-  await producer.send(TOPIC, "demo-key", "Hi How are you?")
+  await producer.send(TOPIC, "demo-key", {
+    event_id: "did",
+    event_type: "TransactionPosted",
+    event_version: 1,
+    payload: {
+      idempotencyKey: "asdfasd",
+      currency: "PKR",
+      postings: [
+        { accountId: 1, amount: "10" },
+        { accountId: 2, amount: "-10" },
+      ],
+    },
+  })
 
   await Promise.race([
     received.promise,

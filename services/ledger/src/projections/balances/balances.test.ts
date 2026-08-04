@@ -4,65 +4,12 @@ import { describe, it, beforeAll, afterAll, expect } from "vitest"
 import { getTestPool } from "../../../test/db.js"
 import { randomString } from "../../utils/helpers.js"
 import type { Event, Balance, BalanceSnapshot } from "../../types.js"
+import { createAccounts, postTransactions } from "../../../test/utils.js"
 import {
   applyToBalances,
   rebuildBalances,
   balancesSnapshot,
 } from "./balances.js"
-import {
-  postTransaction,
-  type PostTransactionInput,
-} from "../../commands/postTransaction/index.js"
-
-async function createAccounts(pool: Pool): Promise<{ a: number; s: number }> {
-  const s = await pool.query(
-    `INSERT INTO accounts (account_number, currency, type) VALUES ($1, 'PKR', 'system') RETURNING id;`,
-    [randomString()]
-  )
-  const a = await pool.query(
-    `INSERT INTO accounts (account_number, currency, type) VALUES ($1, 'PKR', 'asset') RETURNING id;`,
-    [randomString()]
-  )
-
-  const assetId: number = a.rows[0].id
-  const systemId: number = s.rows[0].id
-
-  return { a: assetId, s: systemId }
-}
-
-async function postTransactions(
-  assetId: number,
-  systemId: number,
-  client: PoolClient
-): Promise<void> {
-  const TRANSACTIONS: bigint[] = [20n, 100n, 70n, -100n, 200n, 10n, 500n, 15n]
-
-  for (const transaction of TRANSACTIONS) {
-    const input: PostTransactionInput = {
-      idempotencyKey: randomString(),
-      currency: "PKR",
-      postings: [
-        {
-          accountId: systemId,
-          amount: BigInt(-transaction),
-        },
-        {
-          accountId: assetId,
-          amount: BigInt(transaction),
-        },
-      ],
-    }
-
-    try {
-      await client.query("BEGIN")
-      await postTransaction(input, client)
-      await client.query("COMMIT")
-    } catch (err) {
-      await client.query("ROLLBACK")
-      throw err
-    }
-  }
-}
 
 async function rebuildBalancesFn(client: PoolClient) {
   try {
@@ -85,7 +32,7 @@ describe("Apply balance", () => {
   beforeAll(async () => {
     client = await pool.connect()
 
-    const { a, s } = await createAccounts(pool)
+    const { s, a } = await createAccounts(client)
     assetId = a
     systemId = s
   })
@@ -132,8 +79,8 @@ describe("Apply balance", () => {
     const assetBalance = balances.find((b) => b.account_id === assetId)
     const systemBalance = balances.find((b) => b.account_id === systemId)
 
-    expect(assetBalance?.amount).toBe("100")
-    expect(systemBalance?.amount).toBe("-100")
+    expect(assetBalance?.amount).toBe(100n)
+    expect(systemBalance?.amount).toBe(-100n)
   })
 })
 
@@ -147,7 +94,7 @@ describe("Balances Rebuild", () => {
   beforeAll(async () => {
     client = await pool.connect()
 
-    const { a, s } = await createAccounts(pool)
+    const { s, a } = await createAccounts(client)
     assetId = a
     systemId = s
   })
@@ -158,7 +105,7 @@ describe("Balances Rebuild", () => {
   })
 
   it("Replay events", async () => {
-    await postTransactions(assetId, systemId, client)
+    await postTransactions(systemId, assetId, client)
 
     const { rows: beforeBalances } = await client.query<Balance>(
       "SELECT * FROM balances WHERE account_id = ANY($1)",
@@ -202,7 +149,7 @@ describe("Balances Snapshot", () => {
   beforeAll(async () => {
     client = await pool.connect()
 
-    const { a, s } = await createAccounts(pool)
+    const { s, a } = await createAccounts(client)
     assetId = a
     systemId = s
   })
@@ -224,7 +171,7 @@ describe("Balances Snapshot", () => {
       }
     }
 
-    await postTransactions(assetId, systemId, client)
+    await postTransactions(systemId, assetId, client)
     await takeSnapshot(client)
 
     const { rows: beforeBalances } = await client.query<Balance>(
@@ -250,7 +197,7 @@ describe("Balances Snapshot", () => {
       }
     }
 
-    await postTransactions(assetId, systemId, client)
+    await postTransactions(systemId, assetId, client)
 
     const { rows: afterBalances } = await client.query<Balance>(
       "SELECT * FROM balances"
@@ -306,11 +253,11 @@ describe("rebuildBalances — snapshots at differing cursors", () => {
   beforeAll(async () => {
     client = await pool.connect()
 
-    const pair1 = await createAccounts(pool)
+    const pair1 = await createAccounts(client)
     assetId = pair1.a
     systemId = pair1.s
 
-    const pair2 = await createAccounts(pool)
+    const pair2 = await createAccounts(client)
     assetId2 = pair2.a
     systemId2 = pair2.s
   })
@@ -333,15 +280,15 @@ describe("rebuildBalances — snapshots at differing cursors", () => {
     }
 
     // Pair 1 transacts, then pair 2 — so the two pairs end at different event sequences.
-    await postTransactions(assetId, systemId, client)
-    await postTransactions(assetId2, systemId2, client)
+    await postTransactions(systemId, assetId, client)
+    await postTransactions(systemId2, assetId2, client)
 
     await client.query("BEGIN")
     await balancesSnapshot(client)
     await client.query("COMMIT")
 
     // More activity on pair 2 only, so the rebuild must replay past the snapshot.
-    await postTransactions(assetId2, systemId2, client)
+    await postTransactions(systemId2, assetId2, client)
 
     const before = await readBalances()
     expect(before).toHaveLength(4)

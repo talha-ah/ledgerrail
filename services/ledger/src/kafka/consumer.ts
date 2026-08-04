@@ -1,11 +1,12 @@
 import { getKafka } from "./client.js"
+import type { EventEnvelope } from "./types.js"
 
 export interface IncomingMessage {
   topic: string
   partition: number
   offset: string
-  key: string
-  value: unknown
+  key: string | null
+  value: EventEnvelope
 }
 
 export type MessageHandler = (msg: IncomingMessage) => Promise<void>
@@ -31,6 +32,15 @@ export async function createConsumer(opts: Opts): Promise<ConsumerHandle> {
 
   await consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
+      // We'll add validation gate later
+
+      if (!message.key) {
+        console.log(
+          `[CONSUMER] Empty key detected for: ${topic}:${partition}:${JSON.stringify(message)}`
+        )
+        return
+      }
+
       await opts.onMessage({
         topic,
         partition,
@@ -41,5 +51,10 @@ export async function createConsumer(opts: Opts): Promise<ConsumerHandle> {
     },
   })
 
-  return { disconnect: () => consumer.disconnect() }
+  return {
+    disconnect: async () => {
+      await consumer.disconnect()
+      console.log("[CONSUMER] Disconnected ", opts.groupId)
+    },
+  }
 }
