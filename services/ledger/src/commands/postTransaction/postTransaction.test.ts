@@ -1,19 +1,37 @@
 import { Pool, type PoolClient } from "pg"
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 
-import { getTestPool } from "../../../test/db.js"
+import type { Event, Outbox } from "../../types.js"
 import { randomString } from "../../utils/helpers.js"
-import { useRollbackClient } from "../../../test/db.js"
-import type { Balance, Event, Outbox } from "../../types.js"
+import { createAccounts } from "../../../test/utils.js"
+import {
+  getTestPool,
+  closeTestPool,
+  testTransaction,
+} from "../../../test/db.js"
 import {
   postTransaction,
   type PostTransactionInput,
 } from "./postTransaction.js"
 
+afterAll(closeTestPool)
+
 describe("Post Transaction", () => {
-  const getClient = useRollbackClient()
+  let pool: Pool
+  let client: PoolClient
+
+  beforeAll(async () => {
+    pool = getTestPool()
+    client = await pool.connect()
+  })
+
+  afterAll(async () => {
+    client?.release()
+  })
 
   it("Correct", async () => {
+    const { s, a } = await createAccounts(client)
+
     const idempotencyKey = randomString()
 
     const input: PostTransactionInput = {
@@ -21,44 +39,20 @@ describe("Post Transaction", () => {
       currency: "PKR",
       postings: [
         {
-          accountId: 1,
+          accountId: s,
           amount: -100n,
         },
         {
-          accountId: 2,
+          accountId: a,
           amount: 100n,
         },
       ],
     }
 
-    const client = getClient()
-
-    const { rows: balances } = await client.query<Balance>(
-      `SELECT * FROM balances WHERE account_id = ANY($1)`,
-      [input.postings.map((p) => p.accountId)]
-    )
-
     const result = await postTransaction(input, client)
 
     expect(typeof result.eventId).toBe("string")
     expect(typeof result.globalSeq).toBe("string")
-
-    for (const posting of input.postings) {
-      const { rows: balance } = await client.query<Balance>(
-        `SELECT * FROM balances WHERE account_id = $1`,
-        [posting.accountId]
-      )
-
-      const before =
-        balances.find((b) => b.account_id === posting.accountId)?.amount || 0n
-
-      const after = balance[0]
-      if (!after) {
-        throw new Error(`no balance row for account ${posting.accountId}`)
-      }
-
-      expect(BigInt(before) + posting.amount).toBe(BigInt(after.amount))
-    }
 
     const { rows: events } = await client.query<Pick<Event, "event_id">>(
       `SELECT * FROM events WHERE idempotency_key = $1`,
@@ -94,7 +88,7 @@ describe("Post Transaction", () => {
       ],
     }
 
-    await expect(postTransaction(input, getClient())).rejects.toThrow(
+    await expect(postTransaction(input, client)).rejects.toThrow(
       "Invalid Accounts"
     )
   })
@@ -115,7 +109,7 @@ describe("Post Transaction", () => {
       ],
     }
 
-    await expect(postTransaction(input, getClient())).rejects.toThrow(
+    await expect(postTransaction(input, client)).rejects.toThrow(
       "Invalid Currency"
     )
   })
@@ -136,7 +130,7 @@ describe("Post Transaction", () => {
       ],
     }
 
-    await expect(postTransaction(input, getClient())).rejects.toThrow(
+    await expect(postTransaction(input, client)).rejects.toThrow(
       "Invalid legs found"
     )
   })
@@ -157,7 +151,7 @@ describe("Post Transaction", () => {
       ],
     }
 
-    await expect(postTransaction(input, getClient())).rejects.toThrow(
+    await expect(postTransaction(input, client)).rejects.toThrow(
       "Invalid transaction amounts"
     )
   })
@@ -174,28 +168,30 @@ describe("Post Transaction", () => {
       ],
     }
 
-    await expect(postTransaction(input, getClient())).rejects.toThrow(
+    await expect(postTransaction(input, client)).rejects.toThrow(
       "Less legs found"
     )
   })
 
   it("Insufficient Funds", async () => {
+    const { s, a } = await createAccounts(client)
+
     const input: PostTransactionInput = {
       idempotencyKey: randomString(),
       currency: "PKR",
       postings: [
         {
-          accountId: 1,
+          accountId: s,
           amount: 100n,
         },
         {
-          accountId: 2,
+          accountId: a,
           amount: -100n,
         },
       ],
     }
 
-    await expect(postTransaction(input, getClient())).rejects.toThrow(
+    await expect(postTransaction(input, client)).rejects.toThrow(
       "Insufficient funds"
     )
   })
@@ -228,8 +224,6 @@ describe("Overdraft Race", () => {
     systemId = sys.rows[0].id
   })
 
-  afterAll(async () => await pool?.end())
-
   it("concurrent debits cannot overdraw", async () => {
     const funderInput: PostTransactionInput = {
       idempotencyKey: randomString(),
@@ -246,51 +240,35 @@ describe("Overdraft Race", () => {
       ],
     }
 
-    const funderClient = await pool.connect()
-
-    await funderClient.query("BEGIN")
-    const funded = await postTransaction(funderInput, funderClient)
-    await funderClient.query("COMMIT")
-    funderClient.release()
+    const funded = await testTransaction((client) =>
+      postTransaction(funderInput, client)
+    )
 
     expect(typeof funded.eventId).toBe("string")
     expect(typeof funded.globalSeq).toBe("string")
 
-    // Need two separate connections to own each transaction in parallel
-    const a = await pool.connect()
-    const b = await pool.connect()
-
-    const debit = async (client: PoolClient) => {
-      try {
-        const debitInput: PostTransactionInput = {
-          idempotencyKey: randomString(),
-          currency: "PKR",
-          postings: [
-            {
-              accountId: systemId,
-              amount: 80n,
-            },
-            {
-              accountId: assetId,
-              amount: -80n,
-            },
-          ],
-        }
-
-        await client.query("BEGIN")
-        const result = await postTransaction(debitInput, client)
-        await client.query("COMMIT")
-
-        return result
-      } catch (err) {
-        await client.query("ROLLBACK")
-        throw err
-      } finally {
-        client.release()
+    const debit = async () => {
+      const debitInput: PostTransactionInput = {
+        idempotencyKey: randomString(),
+        currency: "PKR",
+        postings: [
+          {
+            accountId: systemId,
+            amount: 80n,
+          },
+          {
+            accountId: assetId,
+            amount: -80n,
+          },
+        ],
       }
+
+      return await testTransaction((client) =>
+        postTransaction(debitInput, client)
+      )
     }
 
-    const result = await Promise.allSettled([debit(a), debit(b)])
+    const result = await Promise.allSettled([debit(), debit()])
 
     const fulfilled = result.filter((r) => r.status === "fulfilled")
     const rejected = result.filter(
@@ -300,14 +278,6 @@ describe("Overdraft Race", () => {
     expect(fulfilled).toHaveLength(1)
     expect(rejected).toHaveLength(1)
     expect(rejected[0]?.reason.message).toBe("Insufficient funds")
-
-    const { rows: balances } = await pool.query<Balance>(
-      "SELECT * FROM balances WHERE account_id = $1",
-      [assetId]
-    )
-    if (!balances[0]) throw new Error("Balance not found")
-
-    expect(BigInt(balances[0].amount)).toBe(20n)
   })
 })
 
@@ -339,10 +309,6 @@ describe("Idempotency Race", () => {
     systemId = s.rows[0].id
   })
 
-  afterAll(async () => {
-    await pool?.end()
-  })
-
   it("Only one event should work and update balance", async () => {
     const input: PostTransactionInput = {
       idempotencyKey: randomString(),
@@ -359,25 +325,11 @@ describe("Idempotency Race", () => {
       ],
     }
 
-    const a = await pool.connect()
-    const b = await pool.connect()
-
-    const build = async (client: PoolClient) => {
-      try {
-        await client.query("BEGIN")
-        const result = await postTransaction(input, client)
-        await client.query("COMMIT")
-        return result
-      } catch (err) {
-        await client.query("ROLLBACK")
-        throw err
-      } finally {
-        client.release()
-      }
-    }
+    const build = async () =>
+      testTransaction((client) => postTransaction(input, client))
 
     // Race condition should pass
-    const results = await Promise.all([build(a), build(b)])
+    const results = await Promise.all([build(), build()])
     const { globalSeq, eventId } = results[0]
 
     results.forEach((r) => {
@@ -385,30 +337,10 @@ describe("Idempotency Race", () => {
       expect(r.globalSeq).toBe(globalSeq)
     })
 
-    const { rows: beforeBalances } = await pool.query<Balance>(
-      "SELECT * FROM balances WHERE account_id = ANY($1)",
-      [[systemId, assetId]]
-    )
-
-    const balances = Object.fromEntries(
-      beforeBalances.map((b) => [b.account_id, b.amount])
-    )
-
-    input.postings.forEach((p) =>
-      expect(p.amount).toBe(BigInt(balances[p.accountId]!))
-    )
-
     // Retry should pass
-    const result = await build(await pool.connect())
+    const result = await build()
     expect(result.eventId).toBe(eventId)
     expect(result.globalSeq).toBe(globalSeq)
-
-    const { rows: afterBalances } = await pool.query<Balance>(
-      "SELECT * FROM balances WHERE account_id = ANY($1)",
-      [[systemId, assetId]]
-    )
-
-    afterBalances.forEach((b) => expect(b.amount).toBe(balances[b.account_id]))
 
     const { rows: events } = await pool.query(
       `SELECT count(*)::int AS n FROM events WHERE idempotency_key = $1`,

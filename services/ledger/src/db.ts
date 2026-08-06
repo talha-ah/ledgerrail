@@ -32,8 +32,12 @@ export async function connectDB(): Promise<void> {
 
 export async function disconnectDB(): Promise<void> {
   try {
-    const pool = getPool()
-    await pool.end()
+    if (!pool) return
+
+    const p = pool
+    pool = null
+
+    await p.end()
   } catch (err) {
     console.error("[Database] Error disconnecting:", err)
     throw err
@@ -50,21 +54,25 @@ export async function query<T extends object>(
   return pool.query<T>(text, params)
 }
 
-export async function transaction<T>(
-  callback: (client: PoolClient) => Promise<T>
-): Promise<T> {
-  const pool = getPool() // Ensure the pool is initialized before starting a transaction
-  const client = await pool.connect()
+export function makeTransaction(pool: Pool) {
+  return async function <T>(
+    callback: (client: PoolClient) => Promise<T>
+  ): Promise<T> {
+    const client = await pool.connect()
 
-  try {
-    await client.query("BEGIN")
-    const result = await callback(client)
-    await client.query("COMMIT")
-    return result
-  } catch (err) {
-    await client.query("ROLLBACK")
-    throw err
-  } finally {
-    client.release()
+    try {
+      await client.query("BEGIN")
+      const result = await callback(client)
+      await client.query("COMMIT")
+      return result
+    } catch (err) {
+      await client.query("ROLLBACK")
+      throw err
+    } finally {
+      client.release()
+    }
   }
 }
+
+export const transaction = <T>(cb: (c: PoolClient) => Promise<T>) =>
+  makeTransaction(getPool())(cb)

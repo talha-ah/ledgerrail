@@ -1,12 +1,11 @@
 import { getKafka } from "./client.js"
-import type { EventEnvelope } from "./types.js"
 
 export interface IncomingMessage {
   topic: string
   partition: number
   offset: string
   key: string | null
-  value: EventEnvelope
+  value: unknown
 }
 
 export type MessageHandler = (msg: IncomingMessage) => Promise<void>
@@ -22,6 +21,17 @@ export interface Opts {
   onMessage: MessageHandler
 }
 
+export function describeValue(v: unknown): string {
+  try {
+    const s = JSON.stringify(v, (_k, val) =>
+      typeof val === "bigint" ? val.toString() : val
+    )
+    return s === undefined ? String(v) : s.slice(0, 500)
+  } catch {
+    return `<unserializable ${typeof v}>`
+  }
+}
+
 export async function createConsumer(opts: Opts): Promise<ConsumerHandle> {
   const consumer = getKafka().consumer({ groupId: opts.groupId })
   await consumer.connect()
@@ -35,8 +45,8 @@ export async function createConsumer(opts: Opts): Promise<ConsumerHandle> {
       // We'll add validation gate later
 
       if (!message.key) {
-        console.log(
-          `[CONSUMER] Empty key detected for: ${topic}:${partition}:${JSON.stringify(message)}`
+        console.error(
+          `[CONSUMER] Empty key detected for: ${topic}:${partition}:${describeValue(message)}`
         )
         return
       }

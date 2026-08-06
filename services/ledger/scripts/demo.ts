@@ -6,10 +6,7 @@ import { bootstrap } from "../src/index.js"
 import type { Balance } from "../src/types.js"
 import { getPool, transaction } from "../src/db.js"
 import { randomString } from "../src/utils/helpers.js"
-import {
-  balancesSnapshot,
-  rebuildBalances,
-} from "../src/projections/balances/index.js"
+import { balancesSnapshot } from "../src/projections/balanceProjection/index.js"
 import {
   postTransaction,
   type PostTransactionInput,
@@ -146,11 +143,6 @@ async function main() {
   await pool.query("DELETE FROM balances WHERE account_id = ANY($1)", [
     [systemId, asset1Id, asset2Id],
   ])
-
-  await getBalances(systemId, asset1Id, asset2Id, pool)
-
-  console.log("Rebuilding balances")
-  await transaction((client) => rebuildBalances(client))
 
   await getBalances(systemId, asset1Id, asset2Id, pool)
 

@@ -1,6 +1,10 @@
-import type { Event } from "../types.js"
+import type { Event, TransactionPostedPayload } from "../types.js"
 
-export type EventEnvelope = Pick<
+export type EventEnvelope = Omit<
   Event,
-  "event_id" | "event_type" | "event_version" | "payload"
->
+  "global_seq" | "created_at" | "payload" | "idempotency_key"
+> & {
+  global_seq: string
+  created_at: string
+  payload: TransactionPostedPayload
+}

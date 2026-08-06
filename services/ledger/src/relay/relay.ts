@@ -5,11 +5,9 @@
 import type { Pool } from "pg"
 
 import { getPool } from "../db.js"
-import { bootstrap } from "../index.js"
-import { TOPICS } from "../kafka/topics.js"
 import type { Event, Outbox } from "../types.js"
-import type { ProducerHandle } from "../kafka/index.js"
-import { createTopic, createProducer } from "../kafka/index.js"
+import { bootstrap, shutdown } from "../index.js"
+import { TOPICS, createProducer, type ProducerHandle } from "../kafka/index.js"
 
 const BATCH_SIZE = 10
 
@@ -19,11 +17,11 @@ export async function publishBatch(
   limit = BATCH_SIZE
 ): Promise<number> {
   const { rows: outbox } = await pool.query<
-    Pick<Outbox, "event_id" | "topic" | "partition_key"> &
-      Pick<Event, "event_type" | "event_version" | "payload">
+    Pick<Outbox, "global_seq" | "event_id" | "topic" | "partition_key"> &
+      Pick<Event, "event_type" | "event_version" | "payload" | "created_at">
   >(
     `
-      SELECT o.event_id, o.topic, o.partition_key, e.event_type, e.event_version, e.payload
+      SELECT o.global_seq, o.event_id, o.topic, o.partition_key, e.event_type, e.event_version, e.payload, e.created_at
       FROM outbox as o
       JOIN events e on o.event_id = e.event_id
       WHERE topic = $1 AND published_at is NULL
@@ -42,6 +40,8 @@ export async function publishBatch(
       event_id: o.event_id,
       event_type: o.event_type,
       event_version: o.event_version,
+      global_seq: String(o.global_seq),
+      created_at: o.created_at.toISOString(),
     })
 
     await pool.query(
@@ -59,15 +59,29 @@ export async function publishBatch(
 
 export async function main() {
   await bootstrap()
-
-  await createTopic(TOPICS.LEDGER_EVENTS)
   const producer = await createProducer()
 
-  let n: number
+  try {
+    let total = 0
+    let n: number
 
-  do {
-    n = await publishBatch(getPool(), producer)
-  } while (n > 0)
+    do {
+      n = await publishBatch(getPool(), producer)
+      if (n > 0) console.log(`[RELAY] published ${n} event(s)`)
+      total += n
+    } while (n > 0)
 
-  await producer.disconnect()
+    console.log(`[RELAY] done — ${total} event(s) published`)
+  } finally {
+    await producer.disconnect()
+    await shutdown()
+  }
+}
+
+// only auto-start if I'm the program, not if I'm a library someone imported
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
 }

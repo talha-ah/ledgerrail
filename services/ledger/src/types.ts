@@ -17,6 +17,13 @@ export interface Balance {
   updated_at: Date
 }
 
+export interface AccountBalances {
+  account_id: number
+  posted: bigint
+  pending: bigint
+  updated_at: Date
+}
+
 export interface BalanceSnapshot {
   account_id: number
   amount: string
@@ -33,8 +40,8 @@ export interface TransactionPostedPayload {
 export interface Event {
   global_seq: bigint
   event_id: string
-  event_type: string
-  event_version: number
+  event_type: "TransactionPosted"
+  event_version: 1
   payload: TransactionPostedPayload
   idempotency_key: string
   created_at: Date

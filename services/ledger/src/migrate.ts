@@ -101,7 +101,8 @@ export async function runMigrations(pool: Pool): Promise<void> {
         // If anything fails inside the file, the entire DDL batch rolls back cleanly
         await client.query("ROLLBACK;")
         console.error(
-          `[Migrations] ❌ Migration failed and rolled back cleanly: ${file}`
+          `[Migrations] ❌ ${file} failed and rolled back:`,
+          error instanceof Error ? error.message : error
         )
         throw error // Halt the boot process completely
       }

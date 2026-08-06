@@ -1,14 +1,9 @@
-import dotenv from "dotenv"
-import * as path from "path"
-
-dotenv.config({ path: path.resolve(process.cwd(), "../../.env") })
-
+import { loadEnv } from "./utils/env.js"
 import { runMigrations } from "./migrate.js"
-import { loadConfig } from "./utils/loadConfig.js"
 import { getPool, connectDB, disconnectDB } from "./db.js"
 
 export async function bootstrap() {
-  loadConfig()
+  loadEnv()
   await connectDB()
   await runMigrations(getPool())
 }

@@ -1,15 +1,18 @@
 import type { Pool, PoolClient } from "pg"
 import { describe, it, beforeAll, afterAll, expect } from "vitest"
 
-import { getTestPool } from "../../../test/db.js"
 import { randomString } from "../../utils/helpers.js"
-import type { Event, Balance, BalanceSnapshot } from "../../types.js"
-import { createAccounts, postTransactions } from "../../../test/utils.js"
+import type { EventEnvelope } from "../../kafka/types.js"
+import type { Balance, BalanceSnapshot } from "../../types.js"
+import { getTestPool, closeTestPool } from "../../../test/db.js"
+import { createAccounts, postAndProject } from "../../../test/utils.js"
 import {
   applyToBalances,
   rebuildBalances,
   balancesSnapshot,
-} from "./balances.js"
+} from "./balanceProjection.js"
+
+afterAll(closeTestPool)
 
 async function rebuildBalancesFn(client: PoolClient) {
   try {
@@ -39,28 +42,28 @@ describe("Apply balance", () => {
 
   afterAll(async () => {
     client.release()
-    await pool?.end()
   })
 
   it("Replay events", async () => {
-    const event: Pick<Event, "global_seq" | "created_at" | "payload"> = {
-      global_seq: 100n,
-      created_at: new Date(),
-      payload: {
-        idempotencyKey: randomString(),
-        currency: "PKR",
-        postings: [
-          {
-            accountId: systemId,
-            amount: "-100",
-          },
-          {
-            accountId: assetId,
-            amount: "100",
-          },
-        ],
-      },
-    }
+    const event: Pick<EventEnvelope, "global_seq" | "created_at" | "payload"> =
+      {
+        global_seq: String(100n),
+        created_at: new Date().toISOString(),
+        payload: {
+          idempotencyKey: randomString(),
+          currency: "PKR",
+          postings: [
+            {
+              accountId: systemId,
+              amount: "-100",
+            },
+            {
+              accountId: assetId,
+              amount: "100",
+            },
+          ],
+        },
+      }
 
     try {
       await client.query("BEGIN")
@@ -101,11 +104,10 @@ describe("Balances Rebuild", () => {
 
   afterAll(async () => {
     client.release()
-    await pool?.end()
   })
 
   it("Replay events", async () => {
-    await postTransactions(systemId, assetId, client)
+    await postAndProject(systemId, assetId, client)
 
     const { rows: beforeBalances } = await client.query<Balance>(
       "SELECT * FROM balances WHERE account_id = ANY($1)",
@@ -114,9 +116,9 @@ describe("Balances Rebuild", () => {
 
     for (const balance of beforeBalances) {
       if (balance.account_id === systemId) {
-        expect(BigInt(balance.amount)).toBe(-815n)
+        expect(BigInt(balance.amount)).toBe(-915n)
       } else if (balance.account_id === assetId) {
-        expect(BigInt(balance.amount)).toBe(815n)
+        expect(BigInt(balance.amount)).toBe(915n)
       }
     }
 
@@ -131,9 +133,9 @@ describe("Balances Rebuild", () => {
 
     for (const balance of afterBalances) {
       if (balance.account_id === systemId) {
-        expect(BigInt(balance.amount)).toBe(-815n)
+        expect(BigInt(balance.amount)).toBe(-915n)
       } else if (balance.account_id === assetId) {
-        expect(BigInt(balance.amount)).toBe(815n)
+        expect(BigInt(balance.amount)).toBe(915n)
       }
     }
   })
@@ -156,7 +158,6 @@ describe("Balances Snapshot", () => {
 
   afterAll(async () => {
     client.release()
-    await pool?.end()
   })
 
   it("Take a snapshot", async () => {
@@ -171,7 +172,7 @@ describe("Balances Snapshot", () => {
       }
     }
 
-    await postTransactions(systemId, assetId, client)
+    await postAndProject(systemId, assetId, client)
     await takeSnapshot(client)
 
     const { rows: beforeBalances } = await client.query<Balance>(
@@ -183,21 +184,21 @@ describe("Balances Snapshot", () => {
 
     for (const balance of beforeBalances) {
       if (balance.account_id === systemId) {
-        expect(BigInt(balance.amount)).toBe(-815n)
+        expect(BigInt(balance.amount)).toBe(-915n)
       } else if (balance.account_id === assetId) {
-        expect(BigInt(balance.amount)).toBe(815n)
+        expect(BigInt(balance.amount)).toBe(915n)
       }
     }
 
     for (const snapshot of beforeSnapshots) {
       if (snapshot.account_id === systemId) {
-        expect(BigInt(snapshot.amount)).toBe(-815n)
+        expect(BigInt(snapshot.amount)).toBe(-915n)
       } else if (snapshot.account_id === assetId) {
-        expect(BigInt(snapshot.amount)).toBe(815n)
+        expect(BigInt(snapshot.amount)).toBe(915n)
       }
     }
 
-    await postTransactions(systemId, assetId, client)
+    await postAndProject(systemId, assetId, client)
 
     const { rows: afterBalances } = await client.query<Balance>(
       "SELECT * FROM balances"
@@ -212,16 +213,16 @@ describe("Balances Snapshot", () => {
 
     for (const balance of afterBalances) {
       if (balance.account_id === systemId) {
-        expect(BigInt(balance.amount)).toBe(-1630n)
+        expect(BigInt(balance.amount)).toBe(-1830n)
       } else if (balance.account_id === assetId) {
-        expect(BigInt(balance.amount)).toBe(1630n)
+        expect(BigInt(balance.amount)).toBe(1830n)
       }
     }
     for (const snapshot of afterSnapshots) {
       if (snapshot.account_id === systemId) {
-        expect(BigInt(snapshot.amount)).toBe(-815n)
+        expect(BigInt(snapshot.amount)).toBe(-915n)
       } else if (snapshot.account_id === assetId) {
-        expect(BigInt(snapshot.amount)).toBe(815n)
+        expect(BigInt(snapshot.amount)).toBe(915n)
       }
     }
 
@@ -233,9 +234,9 @@ describe("Balances Snapshot", () => {
 
     for (const balance of afterAfterBalances) {
       if (balance.account_id === systemId) {
-        expect(BigInt(balance.amount)).toBe(-1630n)
+        expect(BigInt(balance.amount)).toBe(-1830n)
       } else if (balance.account_id === assetId) {
-        expect(BigInt(balance.amount)).toBe(1630n)
+        expect(BigInt(balance.amount)).toBe(1830n)
       }
     }
   })
@@ -264,7 +265,6 @@ describe("rebuildBalances — snapshots at differing cursors", () => {
 
   afterAll(async () => {
     client.release()
-    await pool?.end()
   })
 
   it("restores every account, not only those at the latest snapshot cursor", async () => {
@@ -280,15 +280,15 @@ describe("rebuildBalances — snapshots at differing cursors", () => {
     }
 
     // Pair 1 transacts, then pair 2 — so the two pairs end at different event sequences.
-    await postTransactions(systemId, assetId, client)
-    await postTransactions(systemId2, assetId2, client)
+    await postAndProject(systemId, assetId, client)
+    await postAndProject(systemId2, assetId2, client)
 
     await client.query("BEGIN")
     await balancesSnapshot(client)
     await client.query("COMMIT")
 
     // More activity on pair 2 only, so the rebuild must replay past the snapshot.
-    await postTransactions(systemId2, assetId2, client)
+    await postAndProject(systemId2, assetId2, client)
 
     const before = await readBalances()
     expect(before).toHaveLength(4)

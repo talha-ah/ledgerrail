@@ -3,10 +3,11 @@ import { describe, it, beforeAll, afterAll, expect } from "vitest"
 
 import type { Event } from "../types.js"
 import { publishBatch } from "./relay.js"
-import { getTestPool } from "../../test/db.js"
-import type { EventEnvelope } from "../kafka/types.js"
-import type { ProducerHandle } from "../kafka/producer.js"
+import { getTestPool, closeTestPool } from "../../test/db.js"
+import type { ProducerHandle, EventEnvelope } from "../kafka/index.js"
 import { createAccounts, postTransactions } from "../../test/utils.js"
+
+afterAll(closeTestPool)
 
 async function getOutboxCount(client: PoolClient) {
   const { rows: outbox } = await client.query<{ n: number }>(
@@ -32,7 +33,6 @@ describe("Relay", () => {
 
   afterAll(async () => {
     client?.release()
-    await pool?.end()
   })
 
   it("Happy path", async () => {

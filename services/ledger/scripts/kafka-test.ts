@@ -1,4 +1,4 @@
-import { bootstrap } from "../src/index.js"
+import { loadEnv } from "../src/utils/env.js"
 import {
   createTopic,
   createProducer,
@@ -17,7 +17,7 @@ function deferred<T>() {
 }
 
 async function main() {
-  await bootstrap()
+  loadEnv()
   await createTopic(TOPIC)
 
   const received = deferred<IncomingMessage>()
@@ -34,7 +34,9 @@ async function main() {
   const producer = await createProducer()
   await producer.send(TOPIC, "demo-key", {
     event_id: "did",
+    global_seq: String(1n),
     event_type: "TransactionPosted",
+    created_at: new Date().toISOString(),
     event_version: 1,
     payload: {
       idempotencyKey: "asdfasd",

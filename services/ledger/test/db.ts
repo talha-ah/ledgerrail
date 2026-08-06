@@ -1,29 +1,22 @@
+import { inject } from "vitest"
 import { Pool, type PoolClient } from "pg"
-import { inject, beforeEach, afterEach, afterAll } from "vitest"
 
-let pool: Pool
+import { makeTransaction } from "../src/db.js"
 
-export function useRollbackClient() {
-  let client: PoolClient
-
-  beforeEach(async () => {
-    pool ??= new Pool({ connectionString: inject("pgUri") })
-    client = await pool.connect()
-    await client.query("BEGIN")
-  })
-
-  afterEach(async () => {
-    await client.query("ROLLBACK") // every write this test made vanishies
-    client.release()
-  })
-
-  afterAll(async () => {
-    await pool?.end()
-  })
-
-  return () => client
-}
+let pool: Pool | null = null
 
 export function getTestPool(): Pool {
-  return new Pool({ connectionString: inject("pgUri") })
+  pool ??= new Pool({
+    connectionString: inject("pgUri"),
+    options: "-c idle_in_transaction_session_timeout=2s -c lock_timeout=2s",
+  })
+  return pool
 }
+
+export async function closeTestPool(): Promise<void> {
+  await pool?.end()
+  pool = null
+}
+
+export const testTransaction = <T>(cb: (c: PoolClient) => Promise<T>) =>
+  makeTransaction(getTestPool())(cb)

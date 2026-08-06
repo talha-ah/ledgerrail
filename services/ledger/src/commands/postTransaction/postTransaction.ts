@@ -2,12 +2,11 @@ import type { PoolClient } from "pg"
 
 import type { Currency } from "@ledgerrail/money"
 
-import { TOPICS, transactionKey } from "../../kafka/topics.js"
-import { applyToBalances } from "../../projections/balances/index.js"
+import { TOPICS, transactionKey } from "../../kafka/index.js"
 import type {
   Event,
   Account,
-  Balance,
+  AccountBalances,
   TransactionPostedPayload,
 } from "../../types.js"
 
@@ -72,13 +71,15 @@ export async function postTransaction(
     // serialize the entire ledger on a single row.
     if (account.type === "system") continue
 
-    const { rows: balances } = await client.query<Pick<Balance, "amount">>(
-      `SELECT amount FROM balances WHERE account_id = $1 FOR UPDATE;`,
+    const { rows: balances } = await client.query<
+      Pick<AccountBalances, "pending" | "posted">
+    >(
+      `SELECT pending, posted FROM account_balances WHERE account_id = $1 FOR UPDATE`,
       [leg.accountId]
     )
 
-    const current = balances[0] ? BigInt(balances[0].amount) : 0n
-    if (current + leg.amount < 0n) throw new Error("Insufficient funds")
+    const available = (balances[0]?.posted ?? 0n) + (balances[0]?.pending ?? 0n)
+    if (available + leg.amount < 0n) throw new Error("Insufficient funds")
   }
 
   // INSERT the event (type 'TransactionPosted', v1, payload = postings with amounts as STRINGS)
@@ -132,7 +133,19 @@ export async function postTransaction(
     [eventId, globalSeq, TOPICS.LEDGER_EVENTS, transactionKey(eventId)]
   )
 
-  await applyToBalances(events[0], client)
+  for (const leg of postings) {
+    await client.query(
+      `
+      INSERT INTO account_balances (account_id, posted)
+      VALUES ($1, $2)
+      ON CONFLICT (account_id)
+      DO UPDATE SET 
+        posted = account_balances.posted + EXCLUDED.posted,
+        updated_at = NOW()
+    `,
+      [leg.accountId, leg.amount]
+    )
+  }
 
   return { globalSeq: String(globalSeq), eventId }
 }

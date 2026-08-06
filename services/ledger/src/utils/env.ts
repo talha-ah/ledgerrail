@@ -1,3 +1,7 @@
+import dotenv from "dotenv"
+import * as path from "path"
+import { fileURLToPath } from "url"
+
 const required = [
   "POSTGRES_PORT",
   "POSTGRES_HOST",
@@ -7,7 +11,7 @@ const required = [
   "KAFKA_BROKER",
 ]
 
-export function loadConfig() {
+function verifyEnvs() {
   const ENV = process.env
 
   const notFound: string[] = []
@@ -19,4 +23,15 @@ export function loadConfig() {
   }
 
   return true
+}
+
+let loaded = false
+export function loadEnv(): void {
+  if (loaded) return
+
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  dotenv.config({ path: path.resolve(here, "../../../../.env") })
+  loaded = true
+
+  verifyEnvs()
 }

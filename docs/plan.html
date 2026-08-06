@@ -160,7 +160,7 @@
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">2 of 7</span></div>
     <div class="stat"><span class="k">Stage 1</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">2.3</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">2.4</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -507,8 +507,29 @@
         <div class="cp-main">
           <h4>Projection behind the log</h4>
           <p class="cp-sum">A consumer calls <code>applyToBalances</code>; the command stops touching balances, and the temporary import is finally deleted.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li>A consumer process projects <code>balances</code> from the log; <code>postTransaction</code> no longer touches the read model at all</li>
+              <li><code>account_balances</code> &mdash; a write-side authoritative balance with <code>posted</code>/<code>pending</code>, updated inside the command&rsquo;s transaction, is what the overdraft guard locks and reads (<a href="decisions/0004-write-side-balances.md">ADR 0004</a>)</li>
+              <li><code>EventEnvelope</code> declared explicitly with wire types &mdash; <code>global_seq</code> and <code>created_at</code> as strings, because JSON has no bigint and a Date survives only as ISO text</li>
+              <li>A validation gate as a type predicate, so the compiler refuses to touch a message before it has been checked; rejections are logged, never silently dropped</li>
+              <li>Verified end to end: write side and read side agree after the relay publishes and the consumer catches up</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>The invariant was being enforced against a lagging projection.</strong> Moving the projection async silently broke the overdraft guard &mdash; it read a table nothing had written yet. An invariant cannot live on an eventually-consistent read model.</li>
+              <li><strong>Two writers doubled every balance.</strong> A rebuild and the consumer both applied the same five events, and because projections apply deltas the read side came out at exactly 2&times;. Deduplication would not have helped &mdash; the duplicate was a second author.</li>
+              <li><strong>The wire contract was derived from the table row</strong>, so it inherited a <code>bigint</code> and a <code>Date</code> that JSON cannot carry &mdash; and an intersection type meant to override them produced <code>never</code>, because <code>&amp;</code> combines constraints rather than replacing them.</li>
+              <li><strong>The type parser was registered where the tests never loaded it</strong>, so tests decoded <code>BIGINT</code> as string while runtime decoded <code>bigint</code>. Fixed with <code>setupFiles</code>, which runs inside the worker.</li>
+              <li><strong>Rollback-per-test was dropped</strong> for a single committing model &mdash; running two isolation models side by side had been quietly making assertions pass by file-ordering luck.</li>
+              <li>A working system looked broken because nothing logged success: the relay published five events silently and never exited, since it disconnected the producer but never ended the pool.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip now">Current</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">
@@ -517,7 +538,7 @@
           <h4>Inbox &amp; deduplication</h4>
           <p class="cp-sum">At-least-once means duplicates are guaranteed, and <code>+=</code> applied twice is wrong money. Correctness moves into our own table rather than the broker.</p>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip now">Current</span></div>
       </div>
 
       <div class="cp">
@@ -585,6 +606,10 @@
         <div class="item ask">
           <span class="h">&ldquo;How do you roll back a migration?&rdquo;</span>
           <span class="b">You usually don&rsquo;t. Production practice is <strong>forward-only</strong>: write a new migration that fixes forward. A <code>down</code> that drops a column is a data-loss event, and rolling back against live writes is often worse than the bug.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">How do you make a Postgres-backed service resilient?</span>
+          <span class="b">Bound every wait, make every retry safe, and put invariants where they can&rsquo;t be bypassed. <strong>Timeouts</strong> &mdash; <code>statement_timeout</code>, <code>lock_timeout</code>, <code>idle_in_transaction_session_timeout</code>; none are on by default, and an unbounded wait is an outage while a fast failure is retryable. <strong>Connections</strong> &mdash; backends are processes, not threads, so the pool&rsquo;s <code>max</code> is your concurrency limit and exhaustion starves unrelated work; release in <code>finally</code>, and reach for PgBouncer at scale knowing transaction-mode pooling breaks session state. <strong>Transactions</strong> &mdash; keep them short, never do network I/O inside one, lock in deterministic order, and owe retries if you choose <code>SERIALIZABLE</code>. <strong>Retries</strong> &mdash; assume duplicate delivery, use <code>UNIQUE</code> + <code>ON CONFLICT</code>, back off with jitter, and retry only transient errors (40001, 40P01) &mdash; a constraint violation never succeeds on retry. <strong>Migrations</strong> &mdash; forward-only, <code>CREATE INDEX CONCURRENTLY</code>, and a <code>lock_timeout</code>, because a blocked <code>ALTER TABLE</code> queues every reader behind it. <strong>Constraints in the database</strong> &mdash; anything enforced only in application code is enforced only where you remembered to. And never enforce an invariant against a replica or an async projection: both are statements about the past.</span>
         </div>
         <div class="item ask">
           <span class="h">Why can&rsquo;t you edit a migration that has already run?</span>
@@ -704,7 +729,11 @@
         </div>
         <div class="item ask">
           <span class="h">How do you isolate integration tests against a real database?</span>
-          <span class="b">Two clean strategies. <strong>Transaction-rollback per test</strong> &mdash; run each test inside a transaction and roll it back at the end; nothing is ever committed, so there is nothing to clean up and it is fast (the default). <strong>Throwaway database per run</strong> &mdash; create a fresh database (or schema), migrate, run, drop; heavier but gives real isolation across parallel workers and lets you test commits and cross-transaction behaviour.</span>
+          <span class="b">Two clean strategies. <strong>Transaction-rollback per test</strong> &mdash; run each test inside a transaction and roll it back at the end; nothing is ever committed, so there is nothing to clean up and it is fast. <strong>Throwaway database per run</strong> &mdash; create a fresh database (or schema), migrate, run, drop; heavier but gives real isolation across parallel workers and lets you test commits and cross-transaction behaviour.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">Why we dropped rollback-per-test for a single committing model.</span>
+          <span class="b">Rollback-per-test gives isolation <em>by construction</em> and needs no cleanup &mdash; which mattered because an append-only trigger makes <code>DELETE</code>/<code>TRUNCATE</code> impossible. But it runs everything on one connection inside one transaction, so it structurally <strong>cannot test concurrency, cross-transaction visibility, or anything that depends on a commit</strong> &mdash; which is most of what this project is about. Every interesting test (overdraft race, idempotency race, relay, snapshot regression) had to abandon it. Worse, <strong>running both models side by side was itself a bug source</strong>: assertions that didn&rsquo;t say which world they lived in passed only by file-ordering luck. So: one model. Every test creates its own data and scopes every assertion to the ids it created &mdash; never a global <code>COUNT(*)</code>. The throwaway container keeps runs from leaking into each other; accumulation within a run is harmless once assertions are scoped. The trade accepted: isolation now comes from discipline rather than construction, paid for by assertions that name their own data.</span>
         </div>
         <div class="item">
           <span class="h">Sequences are non-transactional &mdash; rollback doesn&rsquo;t reclaim ids.</span>
@@ -733,6 +762,14 @@
         <div class="item">
           <span class="h">Enforce invariants where they can&rsquo;t be bypassed.</span>
           <span class="b">Event immutability is a database trigger, not a code convention &mdash; so even a buggy service can&rsquo;t rewrite history.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">&ldquo;How do you rebuild a projection?&rdquo;</span>
+          <span class="b">Once a consumer owns a read model, you <strong>reset its consumer-group offsets and let it replay</strong> &mdash; stop the consumer, truncate the table, seek the group to the start, restart. Rebuilding by calling a function instead makes a <em>second writer</em> with its own cursor, and since projections apply deltas (<code>amount += x</code>) rather than absolute values, the two writers silently double every balance. We hit exactly that: the read side came out at precisely 2&times; the write side because a rebuild and the consumer had both applied the same five events.</span>
+        </div>
+        <div class="item">
+          <span class="h">A projection needs exactly one writer.</span>
+          <span class="b">Two processes writing the same read model track two independent cursors &mdash; a snapshot sequence and a Kafka offset &mdash; over one piece of state, and neither knows what the other applied. No amount of per-consumer deduplication fixes it, because the duplicate isn&rsquo;t a redelivery; it&rsquo;s a second author. Ownership is the fix, not idempotency.</span>
         </div>
         <div class="item ask">
           <span class="h">Three durability contracts in one system.</span>
@@ -805,6 +842,14 @@
         <div class="item">
           <span class="h">At-least-once plus idempotent consumers, over exactly-once.</span>
           <span class="b">Correctness moves into your own inbox table instead of the broker&rsquo;s transactional machinery. Simpler to operate, and you can explain exactly where duplicates die.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">Partition count is a one-way door.</span>
+          <span class="b">You can increase partitions but never decrease them &mdash; and increasing them <strong>breaks key-to-partition mapping</strong>. Messages for <code>transaction:abc</code> that hashed to partition 2 now hash to partition 5, so every ordering guarantee for existing keys is silently void from that moment. Retention and cleanup policy are operational decisions of the same kind.</span>
+        </div>
+        <div class="item">
+          <span class="h">Topics are infrastructure, not application startup.</span>
+          <span class="b">If the relay and the consumer both call <code>createTopic</code>, whichever boots first decides the partition count &mdash; permanently. Provision topics explicitly (a <code>topics:create</code> script run after <code>docker compose up</code>, or a deploy step) so the decision is deliberate and reviewable in one place, and every process assumes the topic already exists. In production, turn <strong>auto-create off</strong> too: it silently creates a new topic on a typo&rsquo;d name, with default partitions, instead of failing loudly.</span>
         </div>
         <div class="item ask">
           <span class="h">Three options for a message you can&rsquo;t handle.</span>

@@ -8,7 +8,7 @@ import { bootstrap } from "../src/index.js"
 import type { Balance } from "../src/types.js"
 import { getPool, transaction } from "../src/db.js"
 import { randomString } from "../src/utils/helpers.js"
-import { rebuildBalances } from "../src/projections/balances/index.js"
+import { rebuildBalances } from "../src/projections/balanceProjection/index.js"
 import {
   postTransaction,
   type PostTransactionInput,

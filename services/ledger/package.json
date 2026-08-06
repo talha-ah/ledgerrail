@@ -8,11 +8,13 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "relay": "tsx src/relay/relay.ts",
     "migration:create": "tsx scripts/create-migration.ts",
     "demo": "tsx scripts/demo.ts",
     "drill:crash": "tsx scripts/drill-crash.ts",
-    "kafka": "tsx scripts/kafka-use.ts"
+    "kafka:test": "tsx scripts/kafka-test.ts",
+    "kafka:topics-create": "tsx scripts/topics-create.ts",
+    "kafka:relay": "tsx src/relay/relay.ts",
+    "kafka:consumer": "tsx src/projections/balanceProjection/consumer.ts"
   },
   "keywords": [],
   "author": "",

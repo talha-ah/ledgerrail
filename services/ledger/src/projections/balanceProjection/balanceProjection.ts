@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg"
 
+import type { EventEnvelope } from "../../kafka/index.js"
 import type { Event, Balance, BalanceSnapshot } from "../../types.js"
 
 async function assertInvariant(client: PoolClient) {
@@ -12,7 +13,7 @@ async function assertInvariant(client: PoolClient) {
 }
 
 export async function applyToBalances(
-  event: Pick<Event, "global_seq" | "created_at" | "payload">,
+  event: Pick<EventEnvelope, "global_seq" | "created_at" | "payload">,
   client: PoolClient
 ) {
   const payload = event.payload
@@ -78,7 +79,14 @@ export async function rebuildBalances(client: PoolClient) {
 
   // Replay each event
   for (const event of events) {
-    await applyToBalances(event, client)
+    await applyToBalances(
+      {
+        global_seq: String(event.global_seq),
+        created_at: event.created_at.toISOString(),
+        payload: event.payload,
+      },
+      client
+    )
   }
 
   // Asset invariant to be zero
