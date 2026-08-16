@@ -3,7 +3,7 @@ import type { PoolClient } from "pg"
 import type { Event } from "../src/types.js"
 import { getTestPool, testTransaction } from "./db.js"
 import { randomString } from "../src/utils/helpers.js"
-import { TOPICS, transactionKey } from "../src/kafka/utils.js"
+import { TOPICS, GROUPS, transactionKey } from "../src/kafka/utils.js"
 import { makeMessageHandler } from "../src/projections/balanceProjection/consumer.js"
 import {
   postTransaction,
@@ -45,7 +45,10 @@ export async function projectEvents(eventIds: string[]): Promise<void> {
     )
   }
 
-  const onMessage = makeMessageHandler(testTransaction)
+  const onMessage = makeMessageHandler(
+    testTransaction,
+    GROUPS.BALANCES_PROJECTION
+  )
 
   for (const [i, event] of rows.entries()) {
     await onMessage({

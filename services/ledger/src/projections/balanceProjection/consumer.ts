@@ -16,20 +16,41 @@ import {
 type RunInTransaction = <T>(cb: (c: PoolClient) => Promise<T>) => Promise<T>
 
 export function makeMessageHandler(
-  runInTransaction: RunInTransaction
+  runInTransaction: RunInTransaction,
+  consumerGroup: string
 ): MessageHandler {
   return async ({ topic, partition, offset, key, value }: IncomingMessage) => {
     if (!validateEvent(value)) {
       console.error(
-        `[CONSUMER] Invalid value detected for: ${topic}:${partition}:${offset}:${key}:${describeValue(value)}`
+        `[CONSUMER] rejected: ${topic}:${partition}:${offset}:${key}:${describeValue(value)}`
       )
       return
     }
 
-    await runInTransaction((c) => applyToBalances(value, c))
+    const applied = await runInTransaction(async (client) => {
+      // Claim the event for this group. The primary key is what makes this safe;
+      // DO NOTHING turns a duplicate into zero rows rather than aborting the
+      // transaction — the same trick postTransaction uses for idempotency keys.
+      const { rows } = await client.query(
+        `
+        INSERT INTO inbox (consumer_group, event_id, partition, kafka_offset)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (consumer_group, event_id) DO NOTHING
+        RETURNING event_id;
+        `,
+        [consumerGroup, value.event_id, partition, offset]
+      )
+
+      if (rows.length === 0) return false // this group already applied it
+
+      await applyToBalances(value, client)
+      return true
+    })
 
     console.log(
-      `[CONSUMER] applied ${value.event_id} (${topic}@${partition}@${offset})`
+      applied
+        ? `[CONSUMER] applied ${value.event_id} (${topic}/${partition}@${offset})`
+        : `[CONSUMER] skipped duplicate ${value.event_id} (${topic}/${partition}@${offset})`
     )
   }
 }
@@ -40,7 +61,7 @@ export async function main() {
   const consumer = await createConsumer({
     topic: TOPICS.LEDGER_EVENTS,
     groupId: GROUPS.BALANCES_PROJECTION,
-    onMessage: makeMessageHandler(transaction),
+    onMessage: makeMessageHandler(transaction, GROUPS.BALANCES_PROJECTION),
   })
 
   let stopping = false

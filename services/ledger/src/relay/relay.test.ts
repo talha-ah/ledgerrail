@@ -45,8 +45,11 @@ describe("Relay", () => {
       disconnect: async () => {},
     }
 
-    const { rows: events } = await client.query<Pick<Event, "event_id">>(
-      "SELECT event_id FROM events ORDER BY global_seq;"
+    const { rows: pending } = await client.query<{ event_id: string }>(
+      `SELECT e.event_id
+     FROM outbox o JOIN events e USING (event_id)
+    WHERE o.published_at IS NULL
+    ORDER BY o.global_seq`
     )
 
     const beforeCount = await getOutboxCount(client)
@@ -59,7 +62,7 @@ describe("Relay", () => {
 
     expect(sent).toHaveLength(beforeCount)
     expect(sent.map((s) => s.value.event_id)).toEqual(
-      events.map((e) => e.event_id)
+      pending.map((e) => e.event_id)
     )
     expect(sent[0]?.key).toBe(`transaction:${sent[0]?.value.event_id}`)
     expect(sent[0]?.value.event_type).toBe("TransactionPosted")

@@ -160,7 +160,7 @@
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">2 of 7</span></div>
     <div class="stat"><span class="k">Stage 1</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">2.4</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">2.5</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -537,8 +537,26 @@
         <div class="cp-main">
           <h4>Inbox &amp; deduplication</h4>
           <p class="cp-sum">At-least-once means duplicates are guaranteed, and <code>+=</code> applied twice is wrong money. Correctness moves into our own table rather than the broker.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>inbox</code> keyed <code>(consumer_group, event_id)</code> &mdash; per group, so a second projection isn&rsquo;t starved of events the first already handled</li>
+              <li>The claim and the effect commit in <strong>one transaction</strong>; splitting them recreates the dual-write problem one layer down, which is why the inbox must live in the projection&rsquo;s own database and why an external cache cannot do this job</li>
+              <li>Detection via <code>INSERT &hellip; ON CONFLICT DO NOTHING RETURNING</code> &mdash; a duplicate yields zero rows instead of raising and aborting the surrounding transaction</li>
+              <li>Bounded by Kafka retention: a message older than the topic&rsquo;s retention can never be redelivered, so its inbox row can be pruned. Recorded in <a href="decisions/0005-consumer-inbox.md">ADR 0005</a>, along with the read-side foreign-key decision and its revisit condition.</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>An order-dependent test that looked fixed.</strong> A relay assertion compared against <em>every</em> event rather than the publishable ones; it passed only because file ordering happened to cooperate. <code>--sequence.shuffle</code> failed it 4 runs in 6 &mdash; and then surfaced a second one immediately.</li>
+              <li><strong>Absolute balance assertions on shared fixtures</strong> &mdash; each test measured accumulated state rather than its own effect. Cured structurally by creating fresh accounts per test rather than by measuring deltas around the problem.</li>
+              <li><strong>Acquire and release drifted out of scope.</strong> Moving fixtures into <code>beforeEach</code> took the client checkout with it and left the release in <code>afterAll</code>, so three of four clients leaked and <code>pool.end()</code> hung the suite.</li>
+              <li>The kept foreign key immediately rejected a synthetic test fixture &mdash; pushing the test toward a real event row, which is the constraint doing exactly what it was retained for.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip now">Current</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">
@@ -547,7 +565,7 @@
           <h4>Dead letter queue</h4>
           <p class="cp-sum">A message that can never be processed must stop blocking everything behind it.</p>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip now">Current</span></div>
       </div>
 
       <div class="cp">
@@ -767,6 +785,14 @@
           <span class="h">&ldquo;How do you rebuild a projection?&rdquo;</span>
           <span class="b">Once a consumer owns a read model, you <strong>reset its consumer-group offsets and let it replay</strong> &mdash; stop the consumer, truncate the table, seek the group to the start, restart. Rebuilding by calling a function instead makes a <em>second writer</em> with its own cursor, and since projections apply deltas (<code>amount += x</code>) rather than absolute values, the two writers silently double every balance. We hit exactly that: the read side came out at precisely 2&times; the write side because a rebuild and the consumer had both applied the same five events.</span>
         </div>
+        <div class="item ask">
+          <span class="h">Deduplication has to be transactional with the effect it guards.</span>
+          <span class="b">&ldquo;Mark as processed&rdquo; and &ldquo;apply the change&rdquo; must commit together, or you have the dual-write problem one layer down: mark-first loses the event on a crash, apply-first replays it. So the inbox lives in the <em>same database as the projection</em> &mdash; which is why an external store like Redis cannot do this job, however convenient it looks. Key it by <code>(consumer_group, event_id)</code>, never <code>event_id</code> alone, or the first group to process an event starves every other group of it.</span>
+        </div>
+        <div class="item">
+          <span class="h">Foreign keys as an inventory of coupling.</span>
+          <span class="b">Keeping FKs across a boundary you may one day split makes the split <em>enumerable</em> &mdash; every constraint crossing the line is a piece of work the database will refuse to let you skip. The cost, for a projection specifically: a foreign key imposes an ordering requirement across partitions, so once the referenced entity is itself created by an event, a consumer can legitimately see the child before the parent and be rejected for being behind rather than for being wrong.</span>
+        </div>
         <div class="item">
           <span class="h">A projection needs exactly one writer.</span>
           <span class="b">Two processes writing the same read model track two independent cursors &mdash; a snapshot sequence and a Kafka offset &mdash; over one piece of state, and neither knows what the other applied. No amount of per-consumer deduplication fixes it, because the duplicate isn&rsquo;t a redelivery; it&rsquo;s a second author. Ownership is the fix, not idempotency.</span>
@@ -834,6 +860,10 @@
         <div class="item ask">
           <span class="h">Why is delivery at-least-once and not exactly-once?</span>
           <span class="b">There is no ordering of &ldquo;produce to Kafka&rdquo; and &ldquo;mark the outbox row published&rdquo; that avoids both loss and duplication, because Kafka and Postgres cannot commit together. Mark first and a crash loses the message forever; produce first and a crash republishes it. We chose produce-first, so duplicates are guaranteed and absorbing them becomes the consumer&rsquo;s job &mdash; which is the entire justification for an inbox.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">&ldquo;How do you handle duplicates?&rdquo;</span>
+          <span class="b">Start from &ldquo;duplicates are certain, not exceptional&rdquo; &mdash; at-least-once delivery guarantees them. Then there are only two moves. <strong>Make the operation naturally idempotent</strong>: writing an absolute value (<code>SET amount = 500</code>) is repeatable; applying a delta (<code>amount += 100</code>) is not, which is why ledger projections need help. <strong>Or make duplicates detectable</strong>: a unique constraint on a stable identity, checked with <code>INSERT &hellip; ON CONFLICT DO NOTHING</code> so a repeat costs nothing and doesn&rsquo;t abort the transaction &mdash; an idempotency key at the API edge, an inbox row keyed by <code>(consumer_group, event_id)</code> at the consumer. The detection record must commit in the <em>same transaction</em> as the effect. And know the limit: this covers database writes only &mdash; an email sent before the commit still goes twice, so effects that leave the transaction need their own idempotency keys carried to the third party.</span>
         </div>
         <div class="item">
           <span class="h">The dual-write problem.</span>
