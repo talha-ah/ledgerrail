@@ -26,7 +26,10 @@ async function main() {
     topic: TOPIC,
     groupId: "exp-1",
     onMessage: async (msg: IncomingMessage) => {
-      console.log(`[${msg.topic}/${msg.partition}@${msg.offset}]`, msg.value)
+      console.log(
+        `[${msg.topic}/${msg.partition}@${msg.offset}]`,
+        msg.raw?.toString("utf-8")
+      )
       received.resolve(msg)
     },
   })

@@ -9,12 +9,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "migration:create": "tsx scripts/create-migration.ts",
-    "demo": "tsx scripts/demo.ts",
-    "drill:crash": "tsx scripts/drill-crash.ts",
     "kafka:test": "tsx scripts/kafka-test.ts",
     "kafka:topics-create": "tsx scripts/topics-create.ts",
     "kafka:relay": "tsx src/relay/relay.ts",
-    "kafka:consumer": "tsx src/projections/balanceProjection/consumer.ts"
+    "kafka:consumer": "tsx src/projections/balanceProjection/consumer.ts",
+    "dlq:redrive": "tsx src/deadLetters/redrive.ts",
+    "demo": "tsx scripts/demo.ts",
+    "drill:crash": "tsx scripts/drill-crash.ts",
+    "drill:poison": "tsx scripts/drill-poison.ts"
   },
   "keywords": [],
   "author": "",

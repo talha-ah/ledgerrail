@@ -51,19 +51,22 @@ export async function projectEvents(eventIds: string[]): Promise<void> {
   )
 
   for (const [i, event] of rows.entries()) {
+    const value = {
+      payload: event.payload,
+      event_id: event.event_id,
+      event_type: event.event_type,
+      event_version: event.event_version,
+      global_seq: String(event.global_seq),
+      created_at: event.created_at.toISOString(),
+    }
+
     await onMessage({
+      value,
       partition: 0,
       offset: String(i),
       topic: TOPICS.LEDGER_EVENTS,
       key: transactionKey(event.event_id),
-      value: {
-        payload: event.payload,
-        event_id: event.event_id,
-        event_type: event.event_type,
-        event_version: event.event_version,
-        global_seq: String(event.global_seq),
-        created_at: event.created_at.toISOString(),
-      },
+      raw: Buffer.from(JSON.stringify(value), "utf-8"),
     })
   }
 }

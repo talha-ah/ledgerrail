@@ -1,15 +1,17 @@
 import type { PoolClient } from "pg"
 
-import { transaction } from "../../db.js"
+import { getPool, transaction } from "../../db.js"
 import { bootstrap, shutdown } from "../../index.js"
+import { PermanentError } from "../../utils/error.js"
 import { applyToBalances } from "./balanceProjection.js"
 import { validateEvent } from "../../utils/validations.js"
+import { withDeadLetter } from "../../deadLetters/withDeadLetter.js"
 import {
   TOPICS,
   GROUPS,
   describeValue,
   createConsumer,
-  type IncomingMessage,
+  type DecodedMessage,
   type MessageHandler,
 } from "../../kafka/index.js"
 
@@ -19,12 +21,12 @@ export function makeMessageHandler(
   runInTransaction: RunInTransaction,
   consumerGroup: string
 ): MessageHandler {
-  return async ({ topic, partition, offset, key, value }: IncomingMessage) => {
+  return async ({ topic, partition, offset, value }: DecodedMessage) => {
+    // Throwing rather than returning: a message this consumer cannot read is a
+    // permanent failure, and it is the caller's business what to do with it.
+    // Returning quietly would commit the offset and lose the message.
     if (!validateEvent(value)) {
-      console.error(
-        `[CONSUMER] rejected: ${topic}:${partition}:${offset}:${key}:${describeValue(value)}`
-      )
-      return
+      throw new PermanentError(`unrecognized message: ${describeValue(value)}`)
     }
 
     const applied = await runInTransaction(async (client) => {
@@ -58,10 +60,15 @@ export function makeMessageHandler(
 export async function main() {
   await bootstrap()
 
+  const group = GROUPS.BALANCES_PROJECTION
+
   const consumer = await createConsumer({
+    groupId: group,
     topic: TOPICS.LEDGER_EVENTS,
-    groupId: GROUPS.BALANCES_PROJECTION,
-    onMessage: makeMessageHandler(transaction, GROUPS.BALANCES_PROJECTION),
+    onMessage: withDeadLetter(makeMessageHandler(transaction, group), {
+      pool: getPool(),
+      consumerGroup: group,
+    }),
   })
 
   let stopping = false

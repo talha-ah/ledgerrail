@@ -15,5 +15,7 @@ export {
   createConsumer,
   type MessageHandler,
   type ConsumerHandle,
+  type DecodedMessage,
   type IncomingMessage,
+  type RawMessageHandler,
 } from "./consumer.js"

@@ -5,10 +5,15 @@ export interface IncomingMessage {
   partition: number
   offset: string
   key: string | null
+  raw: Buffer | null
+}
+
+export interface DecodedMessage extends IncomingMessage {
   value: unknown
 }
 
-export type MessageHandler = (msg: IncomingMessage) => Promise<void>
+export type RawMessageHandler = (msg: IncomingMessage) => Promise<void>
+export type MessageHandler = (msg: DecodedMessage) => Promise<void>
 
 export interface ConsumerHandle {
   disconnect(): Promise<void>
@@ -18,7 +23,7 @@ export interface Opts {
   topic: string
   groupId: string
   fromBeginning?: boolean
-  onMessage: MessageHandler
+  onMessage: RawMessageHandler
 }
 
 export function describeValue(v: unknown): string {
@@ -42,21 +47,16 @@ export async function createConsumer(opts: Opts): Promise<ConsumerHandle> {
 
   await consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
-      // We'll add validation gate later
-
-      if (!message.key) {
-        console.error(
-          `[CONSUMER] Empty key detected for: ${topic}:${partition}:${describeValue(message)}`
-        )
-        return
-      }
+      // No validation, no filtering, no early return: every message reaches the
+      // handler. Dropping one here would commit its offset and lose it silently,
+      // which is the one outcome worse than blocking.
 
       await opts.onMessage({
         topic,
         partition,
         offset: message.offset,
-        key: String(message.key || "") ?? null,
-        value: message.value ? JSON.parse(message.value.toString()) : null,
+        key: message.key ? String(message.key) : null,
+        raw: message.value,
       })
     },
   })

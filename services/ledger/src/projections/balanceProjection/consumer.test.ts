@@ -3,11 +3,12 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest"
 
 import { makeMessageHandler } from "./consumer.js"
 import { randomString } from "../../utils/helpers.js"
+import { PermanentError } from "../../utils/error.js"
 import { createAccounts } from "../../../test/utils.js"
 import { TOPICS, transactionKey } from "../../kafka/index.js"
 import { getTestPool, testTransaction } from "../../../test/db.js"
 import type { Event, TransactionPostedPayload } from "../../types.js"
-import type { EventEnvelope, IncomingMessage } from "../../kafka/index.js"
+import type { EventEnvelope, DecodedMessage } from "../../kafka/index.js"
 
 describe("Balances consumer", () => {
   const pool: Pool = getTestPool()
@@ -59,12 +60,13 @@ describe("Balances consumer", () => {
     }
   }
 
-  const msg = (value: IncomingMessage["value"]): IncomingMessage => ({
-    topic: TOPICS.LEDGER_EVENTS,
-    partition: 0,
-    offset: "0",
-    key: transactionKey("test"),
+  const msg = (value: DecodedMessage["value"]): DecodedMessage => ({
     value,
+    offset: "0",
+    partition: 0,
+    topic: TOPICS.LEDGER_EVENTS,
+    key: transactionKey("test"),
+    raw: Buffer.from(JSON.stringify(value) ?? "undefined", "utf-8"),
   })
 
   async function balanceOf(accountId: number): Promise<bigint> {
@@ -83,24 +85,6 @@ describe("Balances consumer", () => {
 
     expect(await balanceOf(assetId)).toBe(100n)
     expect(await balanceOf(systemId)).toBe(-100n)
-  })
-
-  it("skips messages that fail validation, without throwing", async () => {
-    const onMessage = makeMessageHandler(testTransaction, "group-a")
-
-    const before = await balanceOf(assetId)
-
-    await expect(onMessage(msg(null))).resolves.toBeUndefined()
-    await expect(onMessage(msg("not an object"))).resolves.toBeUndefined()
-    await expect(onMessage(msg({ nope: true }))).resolves.toBeUndefined()
-    await expect(
-      onMessage(msg({ ...(await envelope(50n)), event_version: 99 }))
-    ).resolves.toBeUndefined()
-    await expect(
-      onMessage(msg({ ...(await envelope(50n)), event_type: "something else" }))
-    ).resolves.toBeUndefined()
-
-    expect(await balanceOf(assetId)).toBe(before)
   })
 
   it("applies an event once, even when delivered twice", async () => {
@@ -130,5 +114,30 @@ describe("Balances consumer", () => {
     )
 
     expect(rows.map((r) => r.consumer_group)).toEqual(["group-a", "group-b"])
+  })
+
+  it("rejects messages that fail validation as permanent failures", async () => {
+    const onMessage = makeMessageHandler(testTransaction, "group-a")
+
+    const before = await balanceOf(assetId)
+
+    // Throwing, not returning: quarantining the message is the caller's job, and
+    // returning quietly here would commit the offset and lose it. What happens
+    // to the throw is covered in deadLetters.test.ts.
+    await expect(onMessage(msg(null))).rejects.toBeInstanceOf(PermanentError)
+    await expect(onMessage(msg("not an object"))).rejects.toBeInstanceOf(
+      PermanentError
+    )
+    await expect(onMessage(msg({ nope: true }))).rejects.toBeInstanceOf(
+      PermanentError
+    )
+    await expect(
+      onMessage(msg({ ...(await envelope(50n)), event_version: 99 }))
+    ).rejects.toBeInstanceOf(PermanentError)
+    await expect(
+      onMessage(msg({ ...(await envelope(50n)), event_type: "something else" }))
+    ).rejects.toBeInstanceOf(PermanentError)
+
+    expect(await balanceOf(assetId)).toBe(before)
   })
 })

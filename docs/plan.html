@@ -160,7 +160,7 @@
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">2 of 7</span></div>
     <div class="stat"><span class="k">Stage 1</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">2.5</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">2.6</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -563,9 +563,32 @@
         <div class="cp-id">2.5</div>
         <div class="cp-main">
           <h4>Dead letter queue</h4>
-          <p class="cp-sum">A message that can never be processed must stop blocking everything behind it.</p>
+          <p class="cp-sum">A message that can never be processed must stop blocking everything behind it &mdash; without becoming silent data loss.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>dead_letters</code> keyed by <strong>delivery position</strong> <code>(consumer_group, topic, partition, kafka_offset)</code> &mdash; the only identity every message has, since a malformed one may carry no <code>event_id</code>; re-recording a redelivery is therefore one row, not two</li>
+              <li>A quarantine table <strong>takes what it cannot validate</strong>: no foreign key to <code>events</code>, <code>event_id</code> as <code>TEXT</code>, <code>raw</code> as <code>BYTEA</code>. Anything strict enough to reject bad input would fail <em>inside</em> the recovery path</li>
+              <li>An error taxonomy rather than a <code>catch</code>: an explicit <code>PermanentError</code> plus SQLSTATE classes 22 and 23; everything unrecognised is transient and rethrows. <strong>No retry budget</strong> &mdash; a budget would drain the topic into this table during a thirty-second outage (<a href="decisions/0006-dead-letter-queue.md">ADR 0006</a>)</li>
+              <li>Decoding moved out of the Kafka layer into the wrapper, because a throw at that level escapes past the handler &mdash; so unparseable JSON could never have been quarantined by the thing meant to quarantine it</li>
+              <li>A dead letter <strong>never claims the inbox</strong>: the two tables mean &ldquo;not applied, needs a person&rdquo; and &ldquo;applied&rdquo;. Redrive replays through the same handler, so the inbox is what keeps it single-apply</li>
+              <li><code>last_event_seq</code> moves with <code>GREATEST</code>, since a redrive applies an older event after newer ones have landed &mdash; the amounts commute, the cursor does not</li>
+              <li><code>pnpm drill:poison</code> &mdash; a throwaway single-partition topic, a poison message, a good one behind it, and an assertion on the group&rsquo;s <em>committed offset</em> read back from the broker. The property is that the cursor moved past the poison message; every unit test can only prove the precondition</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>An unqualified column inside <code>ON CONFLICT DO UPDATE</code> is ambiguous.</strong> Two rows are in scope &mdash; the existing one and <code>excluded</code> &mdash; and Postgres refuses to guess. Nine tests failed with an error about none of the things they were testing, because every path routes through one insert.</li>
+              <li><strong>A quarantine table that can reject its input cannot do its job.</strong> Keeping <code>event_id</code> as <code>UUID</code> meant a message carrying a non-UUID id raised <code>22P02</code> from inside the <code>catch</code> block &mdash; no row, no log line, and the partition blocked forever on precisely the message the DLQ exists to release. <code>TEXT</code> does not handle that error better; it makes it unrepresentable.</li>
+              <li><strong>A three-<code>s</code> typo the compiler had no way to catch.</strong> <code>messsage_key</code> in the row interface while the table and both queries said <code>message_key</code> &mdash; internally consistent, so <code>tsc</code> was green, and pg does not check a generic against the <code>SELECT</code>. Every redriven message silently carried <code>key: undefined</code>. The same shape as 2.2&rsquo;s <em>a generic is a cast, not a check</em>.</li>
+              <li><strong>Two tests asserting opposite contracts, side by side.</strong> The old &ldquo;skips messages that fail validation, <em>without throwing</em>&rdquo; survived next to its replacement &mdash; and the contract it described is the silent data-loss path this checkpoint existed to remove.</li>
+              <li><strong>Both deliberate decisions were held in place by nothing.</strong> The <code>TEXT</code> column and the transient rethrow in redrive could each be reverted with the suite staying green. A choice with no test is a comment.</li>
+              <li>The redrive counted a <em>transient</em> failure as &ldquo;permanently broken&rdquo; &mdash; ignoring the taxonomy built one file away, and reporting fifty dead messages when the truth was one dead dependency.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip now">Current</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">
@@ -574,7 +597,7 @@
           <h4>Schema evolution</h4>
           <p class="cp-sum">A v2 event alongside v1, and a consumer that must handle both &mdash; what <code>event_version</code> was reserved for since 1.2.</p>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip now">Current</span></div>
       </div>
 
       <div class="cp">
@@ -884,6 +907,14 @@
         <div class="item ask">
           <span class="h">Three options for a message you can&rsquo;t handle.</span>
           <span class="b"><strong>Throw</strong> &mdash; the offset isn&rsquo;t committed, so it retries forever and blocks the partition. Correct for <em>transient</em> failures, catastrophic for permanent ones. <strong>Skip silently</strong> &mdash; the offset commits and the message vanishes: silent data loss, the worst outcome, because nothing surfaces. <strong>Skip loudly</strong> &mdash; commit the offset but record it: log topic, partition, offset and key, bump a metric, and route the message somewhere it can be inspected. That third one is what a dead letter queue is.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">&ldquo;Why not the conventional DLQ topic?&rdquo;</span>
+          <span class="b">Producing to a DLQ topic and then committing the offset is the dual write again &mdash; crash between them and the poison message is either lost or published twice, and a duplicated dead letter has no key to deduplicate on. A row keyed by <code>(consumer_group, topic, partition, kafka_offset)</code> makes re-recording the same redelivery idempotent: one row, not two. The table also lives in the database that already holds the inbox and the projection, so a redrive is a <code>SELECT</code> and a function call rather than a second consumer with its own group and its own ways to get stuck. <strong>What the topic buys that we gave up:</strong> fan-out and familiarity &mdash; other services can subscribe to failures, and every Kafka operator knows how to inspect a topic without being told where your table is. If that becomes necessary, the outbox pattern already in the system relays the table to a topic without touching the recording path.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">A message is dead-lettered. What happens to the offset?</span>
+          <span class="b">It advances &mdash; because <em>nothing threw</em>. The dead-letter wrapper catches the permanent failure, records the row and returns normally, so the consumer sees a successful <code>eachMessage</code> and commits past it. That is the entire mechanism: quarantining is just <em>not throwing</em>. Throwing is reserved for transient failures, where the offset is deliberately not committed and the partition blocks until the dependency recovers. Two different things get called &ldquo;the offset&rdquo;: a <strong>record&rsquo;s offset</strong> is its position in the partition, assigned by the broker when the producer appends it and never changed by any consumer; a <strong>group&rsquo;s committed offset</strong> is a bookmark in <code>__consumer_offsets</code>, and every group has its own. And a redrive does not touch Kafka at all &mdash; it reads rows from Postgres and calls the handler directly, with no group and no offsets; <code>kafka_offset</code> is only provenance, a record of where the message came from.</span>
         </div>
         <div class="item">
           <span class="h">Transient and permanent failures need opposite responses.</span>

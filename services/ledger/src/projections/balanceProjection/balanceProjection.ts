@@ -26,9 +26,14 @@ export async function applyToBalances(
         VALUES ($1, $2, $3, $4, $4)
         ON CONFLICT (account_id)
         DO UPDATE SET
-          amount = balances.amount + EXCLUDED.amount, -- EXCLUDED is the INSERT row conflicted
-          last_event_seq = EXCLUDED.last_event_seq,
-          updated_at = EXCLUDED.updated_at;
+          amount = balances.amount + EXCLUDED.amount,
+          -- EXCLUDED is the INSERT row conflicted
+          -- GREATEST, not assignment: a redriven dead letter applies an event
+          -- older than ones already here. The amounts survive that (adding
+          -- deltas is commutative) but the cursor must not walk backwards, or it
+          -- claims the projection is behind ground it has already covered.
+          last_event_seq = GREATEST(balances.last_event_seq, EXCLUDED.last_event_seq),
+          updated_at = GREATEST(balances.updated_at, EXCLUDED.updated_at);
       `,
       [leg.accountId, BigInt(leg.amount), event.global_seq, event.created_at]
     )
