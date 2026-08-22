@@ -49,3 +49,12 @@ export function isPermanent(err: unknown): boolean {
   const code = errorCode(err)
   return code !== undefined && PERMANENT_SQLSTATE_CLASSES.has(code.slice(0, 2))
 }
+
+/**
+ * Reachable only if a version was added to the union without being handled —
+ * which is a compile error, which is the point. The throw is the runtime
+ * backstop for the same mistake arriving through JSON.
+ */
+export function assertNever(x: never): never {
+  throw new PermanentError(`unhandled case: ${JSON.stringify(x)}`)
+}

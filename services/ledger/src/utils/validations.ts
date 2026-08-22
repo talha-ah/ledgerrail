@@ -7,10 +7,10 @@ export function validateEvent(event: unknown): event is EventEnvelope {
 
   return (
     Boolean(e.payload) &&
-    e.event_version === 1 &&
     typeof e.event_id === "string" &&
     typeof e.global_seq === "string" &&
     typeof e.created_at === "string" &&
+    typeof e.event_version === "number" &&
     e.event_type === "TransactionPosted"
   )
 }

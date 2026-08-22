@@ -7,7 +7,7 @@ import { PermanentError } from "../../utils/error.js"
 import { createAccounts } from "../../../test/utils.js"
 import { TOPICS, transactionKey } from "../../kafka/index.js"
 import { getTestPool, testTransaction } from "../../../test/db.js"
-import type { Event, TransactionPostedPayload } from "../../types.js"
+import type { Event, TransactionPostedPayloadV1 } from "../../types.js"
 import type { EventEnvelope, DecodedMessage } from "../../kafka/index.js"
 
 describe("Balances consumer", () => {
@@ -27,7 +27,7 @@ describe("Balances consumer", () => {
   afterEach(() => client?.release())
 
   const envelope = async (amount: bigint): Promise<EventEnvelope> => {
-    const payload: TransactionPostedPayload = {
+    const payload: TransactionPostedPayloadV1 = {
       currency: "PKR",
       idempotencyKey: randomString(),
       postings: [

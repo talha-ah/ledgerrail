@@ -9,7 +9,7 @@ import { withDeadLetter } from "./withDeadLetter.js"
 import { createAccounts } from "../../test/utils.js"
 import { TOPICS, transactionKey } from "../kafka/index.js"
 import { getTestPool, testTransaction } from "../../test/db.js"
-import type { Event, TransactionPostedPayload } from "../types.js"
+import type { Event, TransactionPostedPayloadV1 } from "../types.js"
 import { makeMessageHandler } from "../projections/balanceProjection/consumer.js"
 import type {
   EventEnvelope,
@@ -39,7 +39,7 @@ describe("Dead letter queue", () => {
   afterEach(() => client?.release())
 
   const envelope = async (amount: bigint): Promise<EventEnvelope> => {
-    const payload: TransactionPostedPayload = {
+    const payload: TransactionPostedPayloadV1 = {
       currency: "PKR",
       idempotencyKey: randomString(),
       postings: [
@@ -165,7 +165,7 @@ describe("Dead letter queue", () => {
     await expect(wrapped()(raw(encode(env)))).resolves.toBeUndefined()
 
     const [row] = await deadLetters()
-    expect(row?.error).toMatch(/unrecognized message/)
+    expect(row?.error).toMatch(/unknown event version/)
     // Decoding got far enough to identify it, even though validation did not.
     expect(row?.event_id).toBe(env.event_id)
     expect(await balanceOf(assetId)).toBe(0n)
@@ -309,5 +309,25 @@ describe("Dead letter queue", () => {
 
     expect(dlqs).toHaveLength(2)
     expect(dlqs.every((r) => r.resolved_at === null)).toBe(true)
+  })
+
+  it("quarantines a version this build has never heard of", async () => {
+    const env = { ...(await envelope(100n)), event_version: 99 }
+
+    await expect(wrapped()(raw(encode(env)))).resolves.toBeUndefined()
+
+    const [row] = await deadLetters()
+    expect(row?.error).toMatch(/unknown event version/)
+    expect(await balanceOf(assetId)).toBe(0n)
+
+    // The claim and the effect share a transaction, so a rejected event leaves
+    // no inbox row behind — which is what lets a redrive apply it after the
+    // consumer is upgraded, rather than skipping it as already handled.
+    const { rows: inbox } = await pool.query(
+      "SELECT event_id FROM inbox WHERE consumer_group = $1",
+      [group]
+    )
+
+    expect(inbox).toHaveLength(0)
   })
 })

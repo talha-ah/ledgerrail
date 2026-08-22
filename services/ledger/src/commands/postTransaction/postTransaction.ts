@@ -2,16 +2,14 @@ import type { PoolClient } from "pg"
 
 import type { Currency } from "@ledgerrail/money"
 
+import { LATEST_EVENT_VERSION } from "../../events/index.js"
 import { TOPICS, transactionKey } from "../../kafka/index.js"
 import type {
   Event,
   Account,
   AccountBalances,
-  TransactionPostedPayload,
+  TransactionPostedPayloadV2,
 } from "../../types.js"
-
-const EVENT_VERSION = 1
-const EVENT_TYPE = "TransactionPosted"
 
 interface Posting {
   accountId: number
@@ -82,15 +80,17 @@ export async function postTransaction(
     if (available + leg.amount < 0n) throw new Error("Insufficient funds")
   }
 
-  // INSERT the event (type 'TransactionPosted', v1, payload = postings with amounts as STRINGS)
+  // The input still takes one currency for the transaction: v2 changes how the
+  // event is written, not what the ledger permits. Cross-currency is Stage 3's
+  // problem, and letting it in here would make this checkpoint two checkpoints.
   const eventPayload = JSON.stringify({
-    currency: input.currency,
     idempotencyKey: input.idempotencyKey,
     postings: postings.map((p) => ({
       accountId: p.accountId,
       amount: String(p.amount),
+      currency: input.currency,
     })),
-  } satisfies TransactionPostedPayload)
+  } satisfies TransactionPostedPayloadV2)
   const { rows: events } = await client.query<
     Pick<Event, "global_seq" | "event_id" | "created_at" | "payload">
   >(
@@ -100,7 +100,12 @@ export async function postTransaction(
       ON CONFLICT (idempotency_key) DO NOTHING
       RETURNING global_seq, event_id, created_at, payload;
     `,
-    [EVENT_TYPE, EVENT_VERSION, eventPayload, input.idempotencyKey]
+    [
+      "TransactionPosted",
+      LATEST_EVENT_VERSION,
+      eventPayload,
+      input.idempotencyKey,
+    ]
   )
 
   // If zero rows, it's a replay, return ids, and do NOT touch balances

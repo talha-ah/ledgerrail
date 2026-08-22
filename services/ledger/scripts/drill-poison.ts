@@ -12,11 +12,11 @@
 
 import type { PoolClient } from "pg"
 
-import type { Event } from "../src/types.js"
 import { createAccounts } from "../test/utils.js"
 import { getPool, transaction } from "../src/db.js"
 import { bootstrap, shutdown } from "../src/index.js"
 import { randomString } from "../src/utils/helpers.js"
+import type { Event, EventVersion } from "../src/types.js"
 import type { EventEnvelope } from "../src/kafka/index.js"
 import { withDeadLetter } from "../src/deadLetters/withDeadLetter.js"
 import { makeMessageHandler } from "../src/projections/balanceProjection/consumer.js"
@@ -78,9 +78,9 @@ async function postEvent(
     payload: event.payload,
     event_id: event.event_id,
     event_type: event.event_type,
-    event_version: event.event_version,
     global_seq: String(event.global_seq),
     created_at: event.created_at.toISOString(),
+    event_version: event.event_version as EventVersion,
   }
 
   return envelope

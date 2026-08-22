@@ -1,9 +1,9 @@
 import type { PoolClient } from "pg"
 import { describe, it, beforeAll, afterAll, expect } from "vitest"
 
-import type { Event } from "../types.js"
 import { publishBatch } from "./relay.js"
 import { getTestPool, closeTestPool } from "../../test/db.js"
+import type { TransactionPostedPayloadV2 } from "../types.js"
 import type { ProducerHandle, EventEnvelope } from "../kafka/index.js"
 import { createAccounts, postTransactions } from "../../test/utils.js"
 
@@ -66,7 +66,10 @@ describe("Relay", () => {
     )
     expect(sent[0]?.key).toBe(`transaction:${sent[0]?.value.event_id}`)
     expect(sent[0]?.value.event_type).toBe("TransactionPosted")
-    expect(sent[0]?.value.event_version).toBe(1)
-    expect(sent[0]?.value.payload.postings).toHaveLength(2)
+    expect(sent[0]?.value.event_version).toBe(2)
+    const postings = (sent[0]?.value.payload as TransactionPostedPayloadV2)
+      .postings
+    expect(postings).toHaveLength(2)
+    expect(postings.every((leg) => leg.currency === "PKR")).toBe(true)
   })
 })

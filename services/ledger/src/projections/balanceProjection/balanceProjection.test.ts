@@ -3,8 +3,13 @@ import { describe, it, beforeAll, afterAll, expect } from "vitest"
 
 import { randomString } from "../../utils/helpers.js"
 import type { EventEnvelope } from "../../kafka/types.js"
-import type { Balance, BalanceSnapshot } from "../../types.js"
 import { getTestPool, closeTestPool } from "../../../test/db.js"
+import type {
+  Event,
+  Balance,
+  BalanceSnapshot,
+  TransactionPostedPayloadV2,
+} from "../../types.js"
 import { createAccounts, postAndProject } from "../../../test/utils.js"
 import {
   applyToBalances,
@@ -45,25 +50,28 @@ describe("Apply balance", () => {
   })
 
   it("Replay events", async () => {
-    const event: Pick<EventEnvelope, "global_seq" | "created_at" | "payload"> =
-      {
-        global_seq: String(100n),
-        created_at: new Date().toISOString(),
-        payload: {
-          idempotencyKey: randomString(),
-          currency: "PKR",
-          postings: [
-            {
-              accountId: systemId,
-              amount: "-100",
-            },
-            {
-              accountId: assetId,
-              amount: "100",
-            },
-          ],
-        },
-      }
+    const event: Pick<
+      EventEnvelope,
+      "event_version" | "global_seq" | "created_at" | "payload"
+    > = {
+      event_version: 1,
+      global_seq: String(100n),
+      created_at: new Date().toISOString(),
+      payload: {
+        idempotencyKey: randomString(),
+        currency: "PKR",
+        postings: [
+          {
+            accountId: systemId,
+            amount: "-100",
+          },
+          {
+            accountId: assetId,
+            amount: "100",
+          },
+        ],
+      },
+    }
 
     try {
       await client.query("BEGIN")
@@ -242,7 +250,7 @@ describe("Balances Snapshot", () => {
   })
 })
 
-describe("rebuildBalances — snapshots at differing cursors", () => {
+describe("Rebuild Balances — snapshots at differing cursors", () => {
   const pool: Pool = getTestPool()
 
   let assetId: number
@@ -300,6 +308,91 @@ describe("rebuildBalances — snapshots at differing cursors", () => {
     // Cardinality first: a dropped account is invisible to a Σ=0 check,
     // because the surviving accounts still net to zero.
     expect(after).toHaveLength(before.length)
+    expect(after).toEqual(before)
+  })
+})
+
+describe("Rebuild across an event-version boundary", () => {
+  const pool: Pool = getTestPool()
+
+  let assetId: number
+  let systemId: number
+  let client: PoolClient
+
+  beforeAll(async () => {
+    client = await pool.connect()
+    const { s, a } = await createAccounts(client)
+    assetId = a
+    systemId = s
+  })
+
+  afterAll(async () => client.release())
+
+  async function journal(version: 1 | 2, payload: unknown) {
+    const { rows } = await client.query<
+      Pick<Event, "global_seq" | "created_at">
+    >(
+      `INSERT INTO events (event_type, event_version, payload, idempotency_key)
+      VALUES ('TransactionPosted', $1, $2, $3)
+      RETURNING global_seq, created_at;
+      `,
+      [
+        version,
+        JSON.stringify(payload),
+        (payload as TransactionPostedPayloadV2).idempotencyKey,
+      ]
+    )
+
+    const row = rows[0]
+    if (!row) throw new Error("failed to insert fixture event")
+
+    await applyToBalances(
+      {
+        payload: payload,
+        event_version: version,
+        global_seq: String(row.global_seq),
+        created_at: row.created_at.toISOString(),
+      },
+      client
+    )
+  }
+
+  it("reproduces balances from a journal holding both versions", async () => {
+    await journal(1, {
+      currency: "PKR",
+      idempotencyKey: randomString(),
+      postings: [
+        { accountId: systemId, amount: "-100" },
+        { accountId: assetId, amount: "100" },
+      ],
+    })
+
+    await journal(2, {
+      idempotencyKey: randomString(),
+      postings: [
+        { accountId: systemId, amount: "-50", currency: "PKR" },
+        { accountId: assetId, amount: "50", currency: "PKR" },
+      ],
+    })
+
+    const { rows: before } = await client.query<Balance>(
+      `SELECT * FROM balances WHERE account_id = ANY($1) ORDER BY account_id`,
+      [[systemId, assetId]]
+    )
+
+    expect(before).toHaveLength(2)
+    expect(before.find((b) => b.account_id === assetId)?.amount).toBe(150n)
+
+    await rebuildBalancesFn(client)
+
+    const { rows: after } = await client.query<Balance>(
+      `SELECT * FROM balances WHERE account_id = ANY($1) ORDER BY account_id`,
+      [[systemId, assetId]]
+    )
+
+    // The claim: a replay from the journal reproduces the live projection
+    // exactly. It can only hold if the rebuild upcasts too — which is the whole
+    // reason the upcast sits inside applyToBalances rather than at the callers.
     expect(after).toEqual(before)
   })
 })

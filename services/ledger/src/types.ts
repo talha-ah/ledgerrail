@@ -31,18 +31,38 @@ export interface BalanceSnapshot {
   created_at: Date
 }
 
-export interface TransactionPostedPayload {
+export interface TransactionPostedPayloadV1 {
   currency: Currency
   idempotencyKey: string
   postings: { accountId: number; amount: string }[] // strings on the wire
 }
 
+export interface TransactionPostedPayloadV2 {
+  idempotencyKey: string
+  postings: { accountId: number; amount: string; currency: Currency }[] // strings on the wire
+}
+
+/** Discriminated on event_version, so a switch over it can be exhaustive. */
+export type VersionPayload =
+  | { event_version: 1; payload: TransactionPostedPayloadV1 }
+  | { event_version: 2; payload: TransactionPostedPayloadV2 }
+
+export type EventVersion = VersionPayload["event_version"]
+
+export type LatestPayload = TransactionPostedPayloadV2
+
 export interface Event {
   global_seq: bigint
   event_id: string
   event_type: "TransactionPosted"
-  event_version: 1
-  payload: TransactionPostedPayload
+  // A plain number, like the column. Nothing in the schema constrains it, and
+  // upcast is the single place that decides which versions exist — a second
+  // declaration of that list is a second thing to keep in sync.
+  event_version: number
+  // Deliberately not correlated with event_version: this row came out of a
+  // database, which cannot prove the two agree. Asserting that correlation is
+  // exactly what upcast does, in one place, where it can be tested.
+  payload: TransactionPostedPayloadV1 | TransactionPostedPayloadV2
   idempotency_key: string
   created_at: Date
 }

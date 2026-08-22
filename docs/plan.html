@@ -160,7 +160,7 @@
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">2 of 7</span></div>
     <div class="stat"><span class="k">Stage 1</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">2.6</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">2.7</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -596,17 +596,40 @@
         <div class="cp-main">
           <h4>Schema evolution</h4>
           <p class="cp-sum">A v2 event alongside v1, and a consumer that must handle both &mdash; what <code>event_version</code> was reserved for since 1.2.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><strong>v2 carries currency per leg</strong> rather than once per transaction &mdash; a change the multi-currency ledger actually needs, and deliberately <em>breaking</em>: an additive optional field would have let the version machinery be skipped entirely</li>
+              <li>Reconciliation by <strong>upcasting at read time</strong>, not by branching in the projector or dispatching per version. <code>applyToBalances</code> is where money moves, so the number of routes through it stays at one permanently &mdash; adding v3 adds a pure function, not a path (<a href="decisions/0007-event-schema-evolution.md">ADR 0007</a>)</li>
+              <li>The upcast is <strong>the first line of the projector</strong>, not a call at each of the three read boundaries. The rebuild is the caller that would be forgotten, because nothing in production exercises it</li>
+              <li><code>v1ToV2</code> copies the transaction currency onto every leg &mdash; exact rather than invented, because the command always rejected legs of a differing currency. An upcast that has to invent a value is a warning sign</li>
+              <li>Two switches that cannot drift: one turns a number into the version union or throws, the other is exhaustive over the union and ends in <code>assertNever</code>. Adding a version fails to compile until both are handled</li>
+              <li>An <strong>unknown version is a dead letter</strong>, not a block and not a drop &mdash; a message from the future is permanent for <em>this build</em>, so 2.5&rsquo;s redrive is the recovery path once the consumer is upgraded. Readers deploy before writers</li>
+              <li>Proof: a rebuild across a journal holding both versions reproduces the live projection <em>row for row</em>. It can only pass if the rebuild upcasts too</li>
+              <li>The relay needed no changes at all &mdash; it carries <code>event_version</code> through and never interprets it, which is the 2.3 envelope decision paying off</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>An intersection narrowed the type it was meant to widen.</strong> <code>event_version</code> was left out of the envelope&rsquo;s <code>Omit</code> list, so <code>(1 | 2) &amp; number</code> resolved back to <code>1 | 2</code> &mdash; the wire type went on promising a known version while the gate deliberately accepted any number. Same mechanic as 2.3&rsquo;s <code>never</code>: <code>&amp;</code> combines constraints, it does not replace them.</li>
+              <li><strong>The fix that changed nothing.</strong> Adding the field to the <code>Omit</code> and then re-declaring it as <code>EventVersion</code> restructured the type and left the claim identical. A type is only widened when the wider type actually lands.</li>
+              <li>A fixture query with three placeholders and two parameters &mdash; and behind it, an assertion still expecting the amounts from an earlier draft. Two different amounts, not two identical ones: identical legs cannot distinguish &ldquo;both events applied&rdquo; from &ldquo;one applied twice&rdquo;.</li>
+              <li>The relay test asserted the version the command emits, and correctly failed the moment the command emitted v2 &mdash; then earned its keep by growing an assertion that the per-leg currency actually reaches the wire, which is the one thing the projection tests cannot see once the upcast has flattened it.</li>
+              <li><strong>Never assert against the constant under test.</strong> <code>toBe(LATEST_EVENT_VERSION)</code> would have stayed green through the entire checkpoint and reported nothing.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip now">Current</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">
         <div class="cp-id">2.7</div>
         <div class="cp-main">
           <h4>Stage 2 drills</h4>
-          <p class="cp-sum">Kill the relay mid-publish; poison a message into the DLQ; lose Raft quorum by killing 2 of 3 brokers; pause a consumer and watch lag build, then catch up.</p>
+          <p class="cp-sum">Kill the relay mid-publish; poison a message into the DLQ; lose Raft quorum by killing 2 of 3 brokers; pause a consumer and watch lag build, then catch up. <em>The poison drill landed early, in 2.5 &mdash; <code>drill:poison</code> already proves the committed offset moves past a quarantined message.</em></p>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip now">Current</span></div>
       </div>
 
     </div>
@@ -828,6 +851,14 @@
 
       <div class="ngroup">
         <h3>Node &amp; tooling</h3>
+        <div class="item ask">
+          <span class="h">An intersection narrows &mdash; it does not replace.</span>
+          <span class="b"><code>Omit&lt;T, &hellip;&gt; &amp; { field: number }</code> only widens <code>field</code> if <code>field</code> is in the <code>Omit</code> list. Leave it out and you get <code>(1 | 2) &amp; number</code>, which resolves back to <code>1 | 2</code> &mdash; the wider type silently never lands, and a type meant to describe untrusted input goes on promising a value the input cannot guarantee. The same mechanic produces <code>never</code> when the two sides have no overlap, which at least fails loudly. Watch for the non-fix, too: adding the field to <code>Omit</code> and then re-declaring it with the <em>narrow</em> type restructures everything and changes nothing.</span>
+        </div>
+        <div class="item">
+          <span class="h">Never assert against the constant under test.</span>
+          <span class="b"><code>expect(published.event_version).toBe(LATEST_EVENT_VERSION)</code> passes forever, whatever the constant becomes &mdash; it re-derives the answer instead of stating it. Hardcode the value so that changing the constant breaks something and makes you look. The same applies to any test that computes its expectation with the code under test.</span>
+        </div>
         <div class="item">
           <span class="h">Untyped object literals widen string literals.</span>
           <span class="b"><code>const x = { currency: "PKR" }</code> infers <code>currency: string</code>, which won&rsquo;t pass where a <code>Currency</code> union is expected. Give the compiler the target type &mdash; annotate (<code>const x: T = &hellip;</code>) or <code>&hellip; satisfies T</code> &mdash; so it checks and narrows instead of widening. <code>satisfies</code> also flags the typo at the definition, not the call site.</span>
@@ -879,6 +910,18 @@
         <div class="item ask">
           <span class="h">&ldquo;Why not two-phase commit?&rdquo;</span>
           <span class="b">You can&rsquo;t 2PC across a third-party API &mdash; there is no prepare phase to enrol a bank in. SAGA with compensations is the only real option, and the tradeoff you accept is eventual consistency windows.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">&ldquo;What does event sourcing actually cost you?&rdquo;</span>
+          <span class="b">Not the storage &mdash; the <strong>permanent upcasters</strong>. The journal is append-only, so a v1 event written today is still a v1 event during a replay in five years, and whatever translates it runs at read time forever. Adding v3 does not replace <code>v1&rarr;v2</code>, it chains <code>v2&rarr;v3</code> on top, and old events pay every hop on every replay. Event sourcing does not remove schema-migration work; it converts a one-time migration into code you maintain indefinitely, in exchange for never rewriting history. Nothing lets you delete v1 support while a v1 event exists &mdash; not upcasting, not branching, not a handler per version.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">Two versions of an event. Where does the branch go?</span>
+          <span class="b">Three places, and the question is really <em>how many routes reach the money</em>. <strong>Upcast at the boundary</strong> &mdash; one pure function normalises any version, and the projector stays at one code path no matter how many versions exist; the risk is that every reader must pass through it, and the rebuild is the reader nothing exercises. <strong>Branch in the projector</strong> &mdash; nothing is invented and the rebuild gets version handling for free, but there are now N routes into the balance and the older branches stop being exercised by anything except replay. <strong>A handler per version</strong> &mdash; real isolation, except most of a handler is not version-specific, so the shared core gets duplicated or extracted, and extracting it gives you the branch again with indirection. Upcast when the <em>shape</em> changed; reach for a handler when the <em>meaning</em> changed &mdash; and at that point it is probably a new event type, not a new version.</span>
+        </div>
+        <div class="item">
+          <span class="h">An upcast that invents a value is a warning sign.</span>
+          <span class="b">Copying v1&rsquo;s transaction currency onto every leg is exact, because the command always rejected legs of a differing currency &mdash; the information was there, just stored once instead of per leg. When the new shape needs something the old one genuinely never carried, the default you pick becomes load-bearing on every future replay of history that can never be corrected. That is the moment to ask whether it is really a new version or a new event type.</span>
         </div>
         <div class="item ask">
           <span class="h">Why is delivery at-least-once and not exactly-once?</span>
