@@ -158,9 +158,9 @@
   </header>
 
   <div class="stat-strip">
-    <div class="stat"><span class="k">Current stage</span><span class="v accent">2 of 7</span></div>
-    <div class="stat"><span class="k">Stage 1</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">2.7</span></div>
+    <div class="stat"><span class="k">Current stage</span><span class="v accent">3 of 7</span></div>
+    <div class="stat"><span class="k">Stages 1&ndash;2</span><span class="v">complete</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">3.0</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -627,9 +627,32 @@
         <div class="cp-id">2.7</div>
         <div class="cp-main">
           <h4>Stage 2 drills</h4>
-          <p class="cp-sum">Kill the relay mid-publish; poison a message into the DLQ; lose Raft quorum by killing 2 of 3 brokers; pause a consumer and watch lag build, then catch up. <em>The poison drill landed early, in 2.5 &mdash; <code>drill:poison</code> already proves the committed offset moves past a quarantined message.</em></p>
+          <p class="cp-sum">Kill the relay mid-publish; poison a message into the DLQ; lose Raft quorum by killing 2 of 3 brokers; pause a consumer and watch lag build, then catch up.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><code>drill:relay</code> &mdash; a producer that succeeds and then hard-kills the process before the outbox row is marked. Two deliveries of one event, <strong>one movement of money</strong>: at-least-once (<a href="decisions/0003-outbox-and-event-partitioning.md">ADR 0003</a>) and the inbox (<a href="decisions/0005-consumer-inbox.md">ADR 0005</a>) demonstrated together, in two log lines &mdash; <code>applied &hellip;/2@0</code> then <code>skipped duplicate &hellip;/2@1</code></li>
+              <li><code>drill:lag</code> &mdash; lag <code>0 &rarr; 5 &rarr; 0</code> with the projection visibly stale in between. The group&rsquo;s cursor is seeded with <code>admin.setOffsets</code> rather than a warm-up message, which is the same tool you would use to rewind a group and rebuild a projection</li>
+              <li><code>drill:quorum</code> &mdash; two of three brokers stopped, the cluster asked about itself, three transactions committed anyway, the outbox holding all three, and the relay draining them on recovery. <strong>The outage degraded to lag</strong>, not to lost or refused writes (<a href="decisions/0008-replication-and-quorum.md">ADR 0008</a>)</li>
+              <li>A three-broker Redpanda cluster with RF=3, each broker advertising its own address, and a client that bootstraps from all three &mdash; because a single seed makes killing that broker a connection error rather than an observation about quorum</li>
+              <li>The poison drill landed early, in 2.5: <code>drill:poison</code> already proves the committed offset moves past a quarantined message while the message behind it applies</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>Every broker advertised the same hostname, and it did not exist.</strong> The rewritten services kept <code>redpanda</code> from the single-node version in both <code>--advertise-kafka-addr</code> and <code>--advertise-rpc-addr</code>. The RPC one is how brokers find each other for Raft, so the cluster could never have formed. Third time advertised listeners have bitten this project, same signature every time.</li>
+              <li>The compose file did not parse at all &mdash; three brokers mounting volumes the <code>volumes:</code> block never declared, a <code>console</code> still depending on a service that had been commented out, and <code>redpand-2</code> missing its <code>a</code> in every <code>--seeds</code> line. <code>docker compose config</code> answers this in one second and was not run.</li>
+              <li><strong>A drill that passed every assertion and never exited.</strong> Teardown lived in <code>catch</code>, so the success path skipped it entirely &mdash; and a missing log line has two causes, hung or never ran, which look identical and lead to opposite fixes.</li>
+              <li><strong>A fresh consumer group re-applied the whole retained log</strong>, silently doubling the balances of every previous run&rsquo;s accounts while this run&rsquo;s assertions stayed green, because they were scoped to accounts the corruption never touched.</li>
+              <li><strong>Lag reported zero for a group that had no cursors at all</strong> &mdash; a sum over an empty list satisfies any threshold, so the assertion establishing the precondition passed precisely when the precondition was absent. Same shape as 1.6&rsquo;s invariant satisfied by a subset.</li>
+              <li>A warm-up message cannot seed three partitions: a consumer commits offsets only for partitions it has read from, and lag against a partition with no cursor is undefined rather than zero.</li>
+              <li>The drill&rsquo;s headline claim was <code>assert(true, &hellip;)</code> &mdash; the one statement the whole exercise existed to make was the only one that could not fail. Replaced with a count read back from <code>events</code>.</li>
+              <li>A <code>catch</code> that swallowed every error made &ldquo;the publish failed&rdquo; pass for a Postgres error or a typo just as happily as for a broker outage.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip now">Current</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
     </div>
@@ -847,10 +870,22 @@
           <span class="h">Three durability contracts in one system.</span>
           <span class="b"><strong>Events are immutable</strong> &mdash; the source of truth, append-only, enforced by the database. <strong>Projections are rebuildable</strong> &mdash; delete them and replay the journal to get identical state. <strong>Snapshots are disposable</strong> &mdash; pure optimization, regenerable from events at any time. Knowing which category a table falls into tells you what you&rsquo;re allowed to do to it, and it is the clearest way to explain what event sourcing actually buys.</span>
         </div>
+        <div class="item ask">
+          <span class="h">A snapshot is a claim about the <em>projection</em>, so the projection must supply its cursor.</span>
+          <span class="b">A snapshot row carries amounts read from the projection and a sequence number saying <em>when those amounts were true</em>. Stamp that number with the journal&rsquo;s head (<code>MAX(global_seq) FROM events</code>) and you assert the projection had applied everything up to that point &mdash; which was harmlessly true while the command wrote balances in its own transaction, and false by default the moment the projection moved behind the log. A rebuild then seeds from the snapshot and replays only events <em>after</em> it, so <strong>everything the projection had not yet applied is dropped from every future rebuild, permanently</strong>. The fix is one line: stamp <code>MAX(last_event_seq)</code> from the projection, the resume cursor that already exists. A snapshot taken while lagging is then still valid &mdash; true amounts at a true, lower cursor. Refusing to snapshot a lagging projection would be the wrong guard, because lag is the normal condition; the only honest refusal is an <em>empty</em> projection, where no cursor exists to record. <a href="decisions/0009-snapshot-cursor.md">ADR 0009</a>.</span>
+        </div>
+        <div class="item">
+          <span class="h">A correct decision can rot when something underneath it moves.</span>
+          <span class="b">Stamping the journal&rsquo;s head on a snapshot was <em>right</em> in 1.6 &mdash; the command wrote the projection synchronously, so the journal&rsquo;s head and the projection&rsquo;s watermark were the same number. 2.3 moved the projection behind the log and made them two numbers, and nothing announced that the old code now meant something else. This is the failure mode of an assumption that was never written down: it does not break at the moment it stops being true, it breaks the next time somebody relies on it. Worth asking, whenever a boundary moves: what did the old code know that is no longer the case?</span>
+        </div>
       </div>
 
       <div class="ngroup">
         <h3>Node &amp; tooling</h3>
+        <div class="item">
+          <span class="h">A missing log line has two causes.</span>
+          <span class="b">The call hung, or the call never happened. They look the same from the outside and lead to completely different fixes, so the diagnostic is to log <em>before</em> each step as well as after &mdash; whichever label prints last names the call that is stuck, and if none print, the block never ran. <code>process.getActiveResourcesInfo()</code> then names what is still holding the event loop open (<code>Timeout</code>, <code>TCPSocketWrap</code>, <code>TTYWrap</code>) when the answer is a handle rather than a hang.</span>
+        </div>
         <div class="item ask">
           <span class="h">An intersection narrows &mdash; it does not replace.</span>
           <span class="b"><code>Omit&lt;T, &hellip;&gt; &amp; { field: number }</code> only widens <code>field</code> if <code>field</code> is in the <code>Omit</code> list. Leave it out and you get <code>(1 | 2) &amp; number</code>, which resolves back to <code>1 | 2</code> &mdash; the wider type silently never lands, and a type meant to describe untrusted input goes on promising a value the input cannot guarantee. The same mechanic produces <code>never</code> when the two sides have no overlap, which at least fails loudly. Watch for the non-fix, too: adding the field to <code>Omit</code> and then re-declaring it with the <em>narrow</em> type restructures everything and changes nothing.</span>
@@ -910,6 +945,14 @@
         <div class="item ask">
           <span class="h">&ldquo;Why not two-phase commit?&rdquo;</span>
           <span class="b">You can&rsquo;t 2PC across a third-party API &mdash; there is no prepare phase to enrol a bank in. SAGA with compensations is the only real option, and the tradeoff you accept is eventual consistency windows.</span>
+        </div>
+        <div class="item ask">
+          <span class="h">&ldquo;What actually stops a write when brokers die?&rdquo;</span>
+          <span class="b">In Kafka the answer is the durability triad: <code>acks=all</code> alone is not enough, because the in-sync replica set can shrink to just the leader and &ldquo;all replicas&rdquo; then means one. <code>RF=3</code> plus <code>min.insync.replicas=2</code> plus <code>acks=all</code> is the guarantee &mdash; below two in-sync replicas the producer gets <code>NOT_ENOUGH_REPLICAS</code> rather than a false success, so losing two brokers costs <em>write availability</em> instead of silently costing data. <strong>Redpanda works differently underneath:</strong> every partition is its own Raft group, so an RF=3 partition needs 2 of its 3 members to elect a leader or commit anything at all. Kill two brokers and the write fails on the Raft majority, whatever <code>min.insync.replicas</code> says &mdash; it exists there as a Kafka-compatibility knob layered on top, and in v26 it is not exposed as a topic config or a cluster property at all.</span>
+        </div>
+        <div class="item">
+          <span class="h">A config entry accepted is not a config entry applied.</span>
+          <span class="b"><code>createTopics</code> was passed <code>min.insync.replicas=2</code> as a <code>configEntry</code>. No error, no warning, and the setting simply is not on the topic &mdash; <code>rpk topic describe</code> does not list it under any name. The client will happily send a property the broker has no opinion about. Same shape as <em>the linter is not the authority &mdash; the database is</em>: confirm infrastructure state by asking the infrastructure, never by the absence of an exception. And give provisioning scripts a voice, because &ldquo;already exists&rdquo; and &ldquo;created three topics&rdquo; printing the same nothing is how a partition count &mdash; a one-way door &mdash; gets decided by accident.</span>
         </div>
         <div class="item ask">
           <span class="h">&ldquo;What does event sourcing actually cost you?&rdquo;</span>
@@ -979,9 +1022,21 @@
           <span class="h">A consumer group is a named cursor, not an owner.</span>
           <span class="b">Messages don&rsquo;t belong to groups &mdash; the topic is one shared append-only log and each group tracks its own position in it. Ten groups read the same bytes independently. It is precisely the <code>last_event_seq</code> cursor on our balances projection, except the broker stores it instead of us.</span>
         </div>
+        <div class="item ask">
+          <span class="h">What is Raft, and where is it in this stack?</span>
+          <span class="b"><strong>Raft is a consensus algorithm</strong>: a fixed group of replicas agrees on one ordered log. Exactly one member is <em>leader</em> and takes all writes; an entry is <strong>committed</strong> only once a <em>majority</em> of the group has it durably, which is what makes a committed entry survive any minority of failures. If the leader dies the survivors elect a replacement &mdash; but an election also needs a majority to vote, so below majority there is no leader, no commits and no progress at all. The cluster does not serve stale or divergent data; it refuses to move. That is the consistency/availability trade made mechanical rather than philosophical.<br><br><strong>Where it sits differs by broker.</strong> In Redpanda <em>every partition is its own Raft group</em>, plus a separate controller group for cluster metadata &mdash; so an RF=3 partition needs 2 of its 3 replicas to commit a single produce. Apache Kafka in KRaft mode runs Raft for the <em>controller</em> quorum only; partition data uses leader-and-ISR replication, where <code>acks=all</code> plus <code>min.insync.replicas</code> plays the equivalent role. Same guarantee, different machinery &mdash; and worth knowing which one you are describing.<br><br><strong>What it looks like from a client:</strong> a produce to a partition whose leader was on a dead broker fails with <code>ECONNREFUSED</code> &mdash; that alone only proves a machine is gone. The quorum-specific evidence is a produce failing to a leader that is still <em>alive</em>, and the broker answering <code>There is no leader for this topic-partition as we are in the middle of a leadership election</code>.</span>
+        </div>
+        <div class="item">
+          <span class="h">Failure detection is not instantaneous &mdash; and the client doesn&rsquo;t wait for it.</span>
+          <span class="b">Stopping two of three brokers takes 300ms; the cluster reported itself <code>Healthy: true</code>, <code>Nodes down: []</code> for about 100ms afterwards, because the survivors must lose their RPC connections before they can declare a peer gone. Fast, but not zero &mdash; so any check that reads cluster state immediately after inducing a fault reads the state from <em>before</em> it, and a drill written that way fails on an assertion that was true a tenth of a second earlier. Poll until it notices, and log how long that took: the number is the honest answer to &ldquo;how quickly does your system know a node is gone?&rdquo; Meanwhile the <strong>producer failed immediately</strong>, long before the cluster admitted anything was wrong &mdash; a client discovers a dead leader by trying to talk to it, not by being told. The control plane&rsquo;s knowledge and the data plane&rsquo;s experience are separate clocks.</span>
+        </div>
+        <div class="item">
+          <span class="h">A non-zero exit can be the answer, not an error.</span>
+          <span class="b"><code>rpk cluster health</code> exits <code>10</code> to <em>mean</em> unhealthy, the way <code>grep</code> exits 1 for &ldquo;no match&rdquo; and <code>diff</code> exits 1 for &ldquo;files differ&rdquo;. A wrapper that rejects on any non-zero status throws away the verdict it was asked to fetch &mdash; and reports it as a crashed command, which sends you looking at the wrong thing entirely. Return the code and the output, and let the caller decide which codes mean failure.</span>
+        </div>
         <div class="item">
           <span class="h">Quorum is a majority, not a count.</span>
-          <span class="b">A Raft cluster stays available while a majority survives. Kill 2 of 3 brokers and writes stall &mdash; that&rsquo;s the consistency/availability line made visible.</span>
+          <span class="b">A Raft cluster stays available while a majority survives. Kill 2 of 3 brokers and writes stall &mdash; that&rsquo;s the consistency/availability line made visible. Majority means <code>&lfloor;n/2&rfloor; + 1</code>, so a group of 3 tolerates one failure and a group of 5 tolerates two &mdash; and an even size buys nothing, since 4 members also tolerate only one. That is why cluster sizes are odd.</span>
         </div>
       </div>
 

@@ -3,14 +3,18 @@ import type { Pool, PoolClient } from "pg"
 import { formatMoney } from "@ledgerrail/money"
 
 import { bootstrap } from "../src/index.js"
-import type { Balance } from "../src/types.js"
 import { getPool, transaction } from "../src/db.js"
+import type { Event, Balance } from "../src/types.js"
 import { randomString } from "../src/utils/helpers.js"
-import { balancesSnapshot } from "../src/projections/balanceProjection/index.js"
 import {
   postTransaction,
   type PostTransactionInput,
 } from "../src/commands/postTransaction/index.js"
+import {
+  applyToBalances,
+  rebuildBalances,
+  balancesSnapshot,
+} from "../src/projections/balanceProjection/index.js"
 
 async function createAccount(type: "system" | "asset", pool: Pool) {
   const { rows } = await pool.query<{ id: number }>(
@@ -71,6 +75,41 @@ async function getBalances(
   logBalance(balances, systemId, "System")
   logBalance(balances, asset1Id, "Asset A")
   logBalance(balances, asset2Id, "Asset B")
+
+  return balances
+}
+
+/**
+ * No consumer is running, so the demo owns the read side for its own events —
+ * the same applyToBalances the consumer calls, over the events just written.
+ * Without this, `balances` stays empty and every number below is a zero that
+ * looks like a balance.
+ */
+async function project(client: PoolClient) {
+  // last_event_seq is the resume cursor from 1.2. Reading it makes repeated
+  // calls safe — a projection that applies deltas must never replay a range
+  // it has already applied.
+  const { rows: cursor } = await client.query<{ seq: bigint | null }>(
+    "SELECT MAX(last_event_seq) AS seq FROM balances"
+  )
+
+  const { rows } = await client.query<Event>(
+    `SELECT global_seq, event_version, payload, created_at
+       FROM events WHERE global_seq > $1 ORDER BY global_seq`,
+    [String(cursor[0]?.seq ?? 0)]
+  )
+
+  for (const event of rows) {
+    await applyToBalances(
+      {
+        payload: event.payload,
+        event_version: event.event_version,
+        global_seq: String(event.global_seq),
+        created_at: event.created_at.toISOString(),
+      },
+      client
+    )
+  }
 }
 
 async function main() {
@@ -126,6 +165,9 @@ async function main() {
   console.log("Taking a snapshot")
   await transaction((client) => balancesSnapshot(client))
 
+  console.log("Projecting the events onto balances")
+  await transaction((client) => project(client))
+
   console.log("Making some transactions")
   await transaction((client) =>
     postTransactionFn(asset1Id, asset2Id, 10n, randomString(), client)
@@ -139,12 +181,40 @@ async function main() {
 
   await getBalances(systemId, asset1Id, asset2Id, pool)
 
+  console.log("Projecting the new events")
+  await transaction((client) => project(client))
+
+  // Captured before the projection is destroyed: this is what the rebuild has
+  // to reproduce, and comparing against it is the point of the whole demo.
+  const before = await getBalances(systemId, asset1Id, asset2Id, pool)
+
   console.log("Wiping balances")
   await pool.query("DELETE FROM balances WHERE account_id = ANY($1)", [
     [systemId, asset1Id, asset2Id],
   ])
 
   await getBalances(systemId, asset1Id, asset2Id, pool)
+
+  console.log("Rebuilding from the journal")
+  await transaction((client) => rebuildBalances(client))
+
+  const after = await getBalances(systemId, asset1Id, asset2Id, pool)
+
+  // Amounts, not row counts: a rebuild that recomputes every balance as zero
+  // keeps the cardinality identical and tells you nothing.
+  const fingerprint = (rows: Balance[]) =>
+    [...rows]
+      .sort((a, b) => a.account_id - b.account_id)
+      .map((b) => `${b.account_id}:${b.amount}`)
+      .join("  ")
+
+  if (fingerprint(before) !== fingerprint(after)) {
+    throw new Error(
+      `rebuild did not reproduce the projection\n  before  ${fingerprint(before)}\n  after   ${fingerprint(after)}`
+    )
+  }
+
+  console.log("↳ rebuilt from the journal — identical numbers")
 
   await pool.end()
 }

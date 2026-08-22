@@ -107,11 +107,20 @@ export async function rebuildBalances(client: PoolClient) {
 }
 
 export async function balancesSnapshot(client: PoolClient) {
-  // Fetch latest event seq to use as a snapshot point
-  const { rows: latestEvent } = await client.query<{ seq: number }>(
-    "SELECT MAX(global_seq) AS seq FROM events"
+  // The projection's own watermark, not the journal's head. The amounts below
+  // come from `balances`, so the cursor must describe `balances` too — stamping
+  // the latest event id claims the projection had caught up when it may not
+  // have, and a later rebuild then replays only events after a point the
+  // projection never reached. The lost history is invisible: Σ = 0 holds,
+  // because whatever survives nets to zero on its own.
+  const { rows: applied } = await client.query<{ seq: bigint | null }>(
+    "SELECT MAX(last_event_seq) AS seq FROM balances"
   )
-  if (!latestEvent[0]?.seq) throw new Error("Events empty")
+
+  const asOf = applied[0]?.seq
+  if (asOf === null || asOf === undefined) {
+    throw new Error("refusing to snapshot an empty projection")
+  }
 
   const { rows: balances } = await client.query<Balance>(
     "SELECT * FROM balances"
@@ -124,7 +133,7 @@ export async function balancesSnapshot(client: PoolClient) {
       VALUES ($1, $2, $3)
       ON CONFLICT (account_id, as_of_event_seq) DO NOTHING;
       `,
-      [balance.account_id, balance.amount, latestEvent[0].seq]
+      [balance.account_id, balance.amount, String(asOf)]
     )
   }
 }

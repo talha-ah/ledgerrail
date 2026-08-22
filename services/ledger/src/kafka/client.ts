@@ -5,10 +5,18 @@ let kafka: Kafka | null = null
 export function getKafka(): Kafka {
   if (kafka) return kafka
 
-  const broker = process.env.KAFKA_BROKER
-  if (!broker) throw new Error("KAFKA_BROKER is not set")
+  // A list, not a broker. These are seeds used only for bootstrap — the client
+  // learns the real topology from whichever one answers. One seed means killing
+  // that broker breaks the client for reasons unrelated to the cluster's health,
+  // which is how a connection error gets mistaken for a quorum failure.
+  const brokers = (process.env.KAFKA_BROKERS ?? "")
+    .split(",")
+    .map((b) => b.trim())
+    .filter(Boolean)
 
-  kafka = new Kafka({ clientId: "ledger", brokers: [broker] })
+  if (brokers.length === 0) throw new Error("KAFKA_BROKER is not set")
+
+  kafka = new Kafka({ clientId: "ledger", brokers })
 
   return kafka
 }

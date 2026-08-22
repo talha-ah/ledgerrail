@@ -12,18 +12,18 @@
 
 import type { PoolClient } from "pg"
 
-import { createAccounts } from "../test/utils.js"
-import { getPool, transaction } from "../src/db.js"
-import { bootstrap, shutdown } from "../src/index.js"
-import { randomString } from "../src/utils/helpers.js"
-import type { Event, EventVersion } from "../src/types.js"
-import type { EventEnvelope } from "../src/kafka/index.js"
-import { withDeadLetter } from "../src/deadLetters/withDeadLetter.js"
-import { makeMessageHandler } from "../src/projections/balanceProjection/consumer.js"
+import { createAccounts } from "../../test/utils.js"
+import { getPool, transaction } from "../../src/db.js"
+import { bootstrap, shutdown } from "../../src/index.js"
+import { randomString } from "../../src/utils/helpers.js"
+import type { Event, EventVersion } from "../../src/types.js"
+import type { EventEnvelope } from "../../src/kafka/index.js"
+import { withDeadLetter } from "../../src/deadLetters/withDeadLetter.js"
+import { makeMessageHandler } from "../../src/projections/balanceProjection/consumer.js"
 import {
   postTransaction,
   type PostTransactionInput,
-} from "../src/commands/postTransaction/postTransaction.js"
+} from "../../src/commands/postTransaction/postTransaction.js"
 import {
   getKafka,
   createTopic,
@@ -31,7 +31,7 @@ import {
   createConsumer,
   type ConsumerHandle,
   type RawMessageHandler,
-} from "../src/kafka/index.js"
+} from "../../src/kafka/index.js"
 
 const AMOUNT = 100n
 const POISON = "{ not json"

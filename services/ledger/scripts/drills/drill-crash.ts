@@ -4,15 +4,15 @@ import type { Pool, PoolClient } from "pg"
 
 import { formatMoney } from "@ledgerrail/money"
 
-import { bootstrap } from "../src/index.js"
-import type { Balance } from "../src/types.js"
-import { getPool, transaction } from "../src/db.js"
-import { randomString } from "../src/utils/helpers.js"
-import { rebuildBalances } from "../src/projections/balanceProjection/index.js"
+import { bootstrap } from "../../src/index.js"
+import type { Balance } from "../../src/types.js"
+import { getPool, transaction } from "../../src/db.js"
+import { randomString } from "../../src/utils/helpers.js"
+import { rebuildBalances } from "../../src/projections/balanceProjection/index.js"
 import {
   postTransaction,
   type PostTransactionInput,
-} from "../src/commands/postTransaction/index.js"
+} from "../../src/commands/postTransaction/index.js"
 
 async function createAccount(type: "system" | "asset", pool: Pool) {
   const { rows } = await pool.query<{ id: number }>(

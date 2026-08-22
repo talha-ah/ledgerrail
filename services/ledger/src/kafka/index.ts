@@ -9,6 +9,7 @@ export {
   transactionKey,
   DEFAULT_PARTITIONS,
   DEFAULT_REPLICATION,
+  MIN_INSYNC_REPLICAS,
 } from "./utils.js"
 export {
   describeValue,

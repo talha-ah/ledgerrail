@@ -16,45 +16,82 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql
 
-  redpanda:
+  redpanda-0:
     image: redpandadata/redpanda:v26.2.1
     container_name: learn-redpanda-0
     command:
       - redpanda start
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-kafka-addr internal://redpanda-0:9092,external://localhost:19092
       - --schema-registry-addr 0.0.0.0:8081
       - --rpc-addr 0.0.0.0:33145
-      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
-      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
-      - --advertise-rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda-0:33145
+      - --seeds redpanda-0:33145,redpanda-1:33145,redpanda-2:33145
+      - --smp 1
+      - --memory 512M
       - --mode dev-container
     ports:
-      - "9001:8081"
-      - "9002:8082"
       - "19092:19092" # metadata reply - actual address to connect - package uses it automatically
+      - "9001:8081" # for console
     volumes:
-      - redpanda-data:/var/lib/redpanda/data
+      - redpanda-0:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy'"]
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy.*true'"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+  redpanda-1:
+    image: redpandadata/redpanda:v26.2.1
+    container_name: learn-redpanda-1
+    command:
+      - redpanda start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19093
+      - --advertise-kafka-addr internal://redpanda-1:9092,external://localhost:19093
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr redpanda-1:33145
+      - --seeds redpanda-0:33145,redpanda-1:33145,redpanda-2:33145
+      - --smp 1
+      - --memory 512M
+      - --mode dev-container
+    ports:
+      - "19093:19093" # metadata reply - actual address to connect - package uses it automatically
+    volumes:
+      - redpanda-1:/var/lib/redpanda/data
+    depends_on: [redpanda-0]
+  redpanda-2:
+    image: redpandadata/redpanda:v26.2.1
+    container_name: learn-redpanda-2
+    command:
+      - redpanda start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19094
+      - --advertise-kafka-addr internal://redpanda-2:9092,external://localhost:19094
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr redpanda-2:33145
+      - --seeds redpanda-0:33145,redpanda-1:33145,redpanda-2:33145
+      - --smp 1
+      - --memory 512M
+      - --mode dev-container
+    ports:
+      - "19094:19094" # metadata reply - actual address to connect - package uses it automatically
+    volumes:
+      - redpanda-2:/var/lib/redpanda/data
+    depends_on: [redpanda-0]
 
   console:
     image: redpandadata/console:latest
     container_name: learn-redpanda-console
     command: []
     environment:
-      KAFKA_BROKERS: redpanda:9092
-      SCHEMA_REGISTRY_URL: http://redpanda:8081
+      KAFKA_BROKERS: redpanda-0:9092,redpanda-1:9092,redpanda-2:9092
+      SCHEMA_REGISTRY_URL: http://redpanda-0:8081
     ports:
       - "9000:8080"
     depends_on:
-      redpanda:
+      redpanda-0:
         condition: service_healthy
 
 volumes:
   pgdata:
-  redpanda-data:
-    driver: local
+  redpanda-0:
+  redpanda-1:
+  redpanda-2:

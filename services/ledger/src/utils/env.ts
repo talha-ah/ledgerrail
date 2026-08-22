@@ -8,7 +8,7 @@ const required = [
   "POSTGRES_DB",
   "POSTGRES_USER",
   "POSTGRES_PASSWORD",
-  "KAFKA_BROKER",
+  "KAFKA_BROKERS",
 ]
 
 function verifyEnvs() {

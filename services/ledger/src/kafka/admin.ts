@@ -1,5 +1,10 @@
 import { getKafka } from "./client.js"
-import { TOPICS, DEFAULT_PARTITIONS, DEFAULT_REPLICATION } from "./index.js"
+import {
+  TOPICS,
+  DEFAULT_PARTITIONS,
+  DEFAULT_REPLICATION,
+  MIN_INSYNC_REPLICAS,
+} from "./index.js"
 
 export async function createTopic(
   topic: string,
@@ -20,6 +25,12 @@ export async function createTopic(
             topic,
             numPartitions: partitions,
             replicationFactor: replicas,
+            configEntries: [
+              {
+                name: "min.insync.replicas",
+                value: String(MIN_INSYNC_REPLICAS),
+              },
+            ],
           },
         ],
       })
@@ -42,15 +53,34 @@ export async function createTopics() {
       if (!topics.includes(topic)) newTopics.push(topic)
     }
 
-    if (newTopics.length <= 0) return
+    if (newTopics.length <= 0) {
+      console.log(
+        `[TOPICS] nothing to do — ${topics.length} topic(s) already exist`
+      )
+      return
+    }
 
     const input = newTopics.map((t) => ({
       topic: t,
       numPartitions: DEFAULT_PARTITIONS,
       replicationFactor: DEFAULT_REPLICATION,
+      configEntries: [
+        {
+          name: "min.insync.replicas",
+          value: String(MIN_INSYNC_REPLICAS),
+        },
+      ],
     }))
 
     await admin.createTopics({ topics: input })
+
+    console.log(
+      `[TOPICS] created ${input
+        .map(
+          (t) => `${t.topic} (${t.numPartitions}p, rf=${t.replicationFactor})`
+        )
+        .join(", ")}`
+    )
   } finally {
     await admin.disconnect()
   }
