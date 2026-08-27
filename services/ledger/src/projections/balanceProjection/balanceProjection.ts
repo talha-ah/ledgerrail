@@ -16,14 +16,14 @@ async function assertInvariant(client: PoolClient) {
 export async function applyToBalances(
   event: Pick<
     EventEnvelope,
-    "event_version" | "global_seq" | "created_at" | "payload"
+    "event_type" | "event_version" | "global_seq" | "created_at" | "payload"
   >,
   client: PoolClient
 ) {
   // Here rather than at the call sites. There are three callers — the consumer,
   // the rebuild and the redrive — and the rebuild is the one that would be
   // forgotten, because nothing in production exercises it.
-  const payload = upcast(event)
+  const { payload } = upcast(event)
 
   // Recomputes balances from scratch
   for (const leg of payload.postings) {
@@ -78,10 +78,13 @@ export async function rebuildBalances(client: PoolClient) {
 
   // Reads all events in global_seq order
   const { rows: events } = await client.query<
-    Pick<Event, "event_version" | "global_seq" | "payload" | "created_at">
+    Pick<
+      Event,
+      "event_type" | "event_version" | "global_seq" | "payload" | "created_at"
+    >
   >(
     `
-    SELECT event_version, global_seq, payload, created_at
+    SELECT event_type, event_version, global_seq, payload, created_at
     FROM events
     WHERE global_seq > $1
     ORDER BY global_seq ASC
@@ -94,6 +97,7 @@ export async function rebuildBalances(client: PoolClient) {
     await applyToBalances(
       {
         payload: event.payload,
+        event_type: event.event_type,
         event_version: event.event_version,
         global_seq: String(event.global_seq),
         created_at: event.created_at.toISOString(),

@@ -160,7 +160,7 @@
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">3 of 7</span></div>
     <div class="stat"><span class="k">Stages 1&ndash;2</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">3.0</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">3.2</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -660,6 +660,103 @@
 
   <section>
     <div class="sec-head">
+      <h2>Stage 3 &mdash; Payment orchestration saga</h2>
+      <span class="eyebrow">checkpoint ledger</span>
+    </div>
+
+    <div class="ledger">
+
+      <div class="cp">
+        <div class="cp-id">3.0</div>
+        <div class="cp-main">
+          <h4>Mock rails</h4>
+          <p class="cp-sum">A bank and an FX service as <em>real HTTP processes</em>, because Stage 4 puts Toxiproxy in front of them and a proxy needs a socket. The bank settles idempotently against a client-supplied key and can answer &ldquo;what do you think happened?&rdquo; &mdash; without that lookup, 3.5&rsquo;s ambiguity is unresolvable.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">3.1</div>
+        <div class="cp-main">
+          <h4>Holds</h4>
+          <p class="cp-sum">Money spoken for but not yet moved &mdash; the ledger vocabulary a saga needs before it can try anything.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><strong>A hold is a posting, not a column.</strong> <code>FundsHeld</code> moves the amount into a per-currency reserve account, <code>HoldCaptured</code> sends it on to the destination, <code>HoldReleased</code> returns it &mdash; three balanced events, replayable, auditable, covered by &Sigma; = 0. <code>account_balances.pending</code> stays unused (<a href="decisions/0010-holds-as-postings.md">ADR 0010</a>)</li>
+              <li>The reserve is a <code>system</code> account, so holds don&rsquo;t serialise on one locked row per currency &mdash; and the once-only invariant moves to the hold row, enforced by <code>SELECT &hellip; WHERE status = 'held' FOR UPDATE</code>, which is where a fact about a hold&rsquo;s lifecycle belongs</li>
+              <li><code>event_type</code> stops being a single literal for the first time since 1.2. <code>upcast</code> resolves <code>(type, version)</code>, an unknown <em>type</em> dead-letters exactly as an unknown version does, and <strong>the projector never learns there are four event types</strong> &mdash; every payload carries <code>postings</code>, so to <code>balances</code> every event is still legs that sum to zero</li>
+              <li><code>assertPostable</code> and <code>appendEvent</code> extracted, because two copies of &ldquo;may this money move?&rdquo; had already started to drift between two commands</li>
+              <li>The strongest assertion in the checkpoint: <strong>the reserve holds exactly what the outstanding holds say it holds</strong>, per currency. Unlike &Sigma; = 0 &mdash; satisfied by any subset of balanced events &mdash; it ties a balance to a count of rows in a state, so over-capture, double release and a leg with the wrong sign all break it</li>
+              <li>A rebuild across a journal of transfers, holds and captures reproduces the projection row for row</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>The overdraft guard ran before the idempotency check &mdash; latent since 1.4.</strong> Replay a key whose original already spent the funds and the retry fails with <code>Insufficient funds</code> instead of returning the original receipt. The existing idempotency test could never see it, because both callers race <em>before</em> balances move. Two replay checks are now needed and neither is redundant: a <code>SELECT</code> up front for <em>retry later</em>, <code>ON CONFLICT</code> inside the append for <em>retry now</em>.</li>
+              <li><strong>Five rebuild tests were order-dependent</strong>, and only shuffle showed it. Fresh accounts isolate <em>data</em>; they cannot isolate an operation whose subject is <em>wipe and rebuild everything</em>. The mechanism was 1.6&rsquo;s ghost: <code>MAX(last_event_seq)</code> is an honest watermark only for a projector that applies every event in order &mdash; true of the consumer, false of a test that projects a chosen subset &mdash; and a snapshot then records that over-claim faithfully.</li>
+              <li><code>WHERE status = 'hold'</code> where the value is <code>'held'</code>. A <code>CHECK</code> constrains what is written, never what a predicate compares against, so a typo in a <code>WHERE</code> is a silent empty result. Same shape as 2.5&rsquo;s <code>messsage_key</code>: a string literal with no checker on either side.</li>
+              <li><strong>A constant changed type and every call site kept compiling.</strong> <code>LATEST_EVENT_VERSION</code> became a map when the vocabulary grew, and <code>postTransaction</code> went on passing the whole object into an integer column &mdash; because query parameters are <code>any[]</code>. The read side of that boundary has bitten this project three times; this was the write side.</li>
+              <li>A test fixture that assumed it owned the <code>accounts</code> table: hardcoded ids 1 and 2, which the migration&rsquo;s reserve accounts had just taken, plus an assertion counting <em>every</em> row rather than the two it inserted.</li>
+              <li><strong>The failure that hid every other failure.</strong> Global setup stopped the container before ending the pool, so idle clients raised <code>57P01</code>, the unhandled <code>'error'</code> killed the process, and seven test files reported zero tests with no reason given.</li>
+              <li>An aggregate has its own type: <code>SUM</code> of a <code>BIGINT</code> is <code>NUMERIC</code>, which arrives as a string while the column arrives as a <code>bigint</code> &mdash; the same lesson the <code>COUNT(*)::int</code> casts already encode.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">3.2</div>
+        <div class="cp-main">
+          <h4>Saga state</h4>
+          <p class="cp-sum">A <code>payments</code> table and its state machine, plus the crash-safe transition rule &mdash; record the intent, act, record the outcome, because you cannot atomically call a bank and record that you called it.</p>
+        </div>
+        <div class="cp-status"><span class="chip now">Current</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">3.3</div>
+        <div class="cp-main">
+          <h4>The orchestrator</h4>
+          <p class="cp-sum">Hold &rarr; quote &rarr; settle &rarr; commit, happy path end to end.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">3.4</div>
+        <div class="cp-main">
+          <h4>Compensations</h4>
+          <p class="cp-sum">Release a hold, reverse a settlement, sweep expired holds &mdash; and the fact that a compensation is a <em>forward</em> transaction, not a rollback. You cannot un-send money; you send it back.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">3.5</div>
+        <div class="cp-main">
+          <h4>The ambiguous ack</h4>
+          <p class="cp-sum">The bank settles and dies before answering. Naive retry double-pays; an end-to-end idempotency key carried to the third party plus a reconciler that asks the rail what it thinks happened is what fixes it.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+      <div class="cp">
+        <div class="cp-id">3.6</div>
+        <div class="cp-main">
+          <h4>Choreography for contrast</h4>
+          <p class="cp-sum">One flow driven by events instead of an orchestrator, and an honest account of what it costs &mdash; visibility, ordering, and somewhere to look when it stalls.</p>
+        </div>
+        <div class="cp-status"><span class="chip wait">Planned</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
       <h2>Decisions on the record</h2>
       <span class="eyebrow">the questions an interviewer digs into</span>
     </div>
@@ -772,7 +869,7 @@
         </div>
         <div class="item">
           <span class="h">Explicit ids don&rsquo;t advance a <code>SERIAL</code> sequence.</span>
-          <span class="b">Seed rows with hardcoded ids and the sequence stays where it was &mdash; the next auto-generated insert hands out an id that already exists and dies on a duplicate key. Same bug bites after restoring a dump. Fix: <code>SELECT setval(pg_get_serial_sequence('t','id'), (SELECT MAX(id) FROM t))</code> after seeding.</span>
+          <span class="b">Seed rows with hardcoded ids and the sequence stays where it was &mdash; the next auto-generated insert hands out an id that already exists and dies on a duplicate key. Same bug bites after restoring a dump. Fix: <code>SELECT setval(pg_get_serial_sequence('t','id'), (SELECT MAX(id) FROM t))</code> after seeding. <strong>It bites from the other direction too</strong>, and that one is easier to miss: a later migration inserted five reserve accounts <em>through</em> the sequence, taking ids 1&ndash;5, and the test fixture that had always hardcoded ids 1 and 2 then collided on its first insert. A hardcoded id is a claim of ownership over a range that nothing enforces, so the durable fix is not <code>setval</code> &mdash; it is to stop hardcoding ids and read back what the sequence assigned. <strong>Not universal across databases:</strong> where the generator is a separate object handing out numbers &mdash; Postgres <code>SERIAL</code>/<code>IDENTITY</code>, Oracle identity, SQL Server <code>IDENTITY</code> (which also demands <code>SET IDENTITY_INSERT ON</code> and a <code>DBCC CHECKIDENT</code> to resync) &mdash; it cannot see what you inserted by hand. Where the counter is derived from the table&rsquo;s maximum &mdash; MySQL <code>AUTO_INCREMENT</code>, SQLite rowid &mdash; an explicit higher value moves it and the ascending case self-heals. Postgres cannot behave that way because a sequence is an independent, non-transactional object that several tables may share, so there is no one table it could infer its position from.</span>
         </div>
         <div class="item">
           <span class="h">A leaked client turns an error into a silent hang.</span>

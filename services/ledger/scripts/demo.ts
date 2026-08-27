@@ -103,6 +103,7 @@ async function project(client: PoolClient) {
     await applyToBalances(
       {
         payload: event.payload,
+        event_type: event.event_type,
         event_version: event.event_version,
         global_seq: String(event.global_seq),
         created_at: event.created_at.toISOString(),

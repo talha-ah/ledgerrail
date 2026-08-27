@@ -59,18 +59,26 @@ export default async function (project: TestProject) {
 
   const uri = container.getConnectionUri()
   const pool = new Pool({ connectionString: uri })
+  pool.on("error", (err) =>
+    console.error("[Test DB] idle client error:", err.message)
+  )
 
   try {
     await runMigrations(pool)
     await seedReferenceData(pool)
   } catch (error) {
+    // The pool goes first. A pool whose server has vanished emits an unhandled
+    // 'error' from its idle clients, which crashes the process — and takes the
+    // real error with it, which is how a seed failure becomes "0 tests, no
+    // explanation".
+    await pool.end().catch(() => {})
     await container.stop()
     throw error
-  } finally {
-    await pool.end()
   }
 
   project.provide("pgUri", uri)
+
+  await pool.end()
 
   return async () => await container.stop()
 }

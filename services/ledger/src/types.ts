@@ -31,6 +31,12 @@ export interface BalanceSnapshot {
   created_at: Date
 }
 
+export interface Posting {
+  accountId: number
+  amount: string // strings on the wire
+  currency: Currency
+}
+
 export interface TransactionPostedPayloadV1 {
   currency: Currency
   idempotencyKey: string
@@ -39,22 +45,80 @@ export interface TransactionPostedPayloadV1 {
 
 export interface TransactionPostedPayloadV2 {
   idempotencyKey: string
-  postings: { accountId: number; amount: string; currency: Currency }[] // strings on the wire
+  postings: Posting[]
 }
 
-/** Discriminated on event_version, so a switch over it can be exhaustive. */
+export interface FundsHeldPayloadV1 {
+  holdId: string
+  idempotencyKey: string
+  expiresAt: string
+  postings: Posting[] // customer -> hold funds
+}
+
+export interface HoldCapturedPayloadV1 {
+  holdId: string
+  idempotencyKey: string
+  postings: Posting[] // held funds -> destination
+}
+
+export interface HoldReleasedPayloadV1 {
+  holdId: string
+  idempotencyKey: string
+  postings: Posting[] // held funds -> customer
+}
+
+/**
+ * Discriminated on BOTH axes now. Every payload carries `postings`, which is what
+ * keeps the read-side projector type-agnostic: to `balances`, every event is legs
+ * that sum to zero. The type matters to the write side and to the audit trail —
+ * "why did this money move?" — not to the arithmetic.
+ */
 export type VersionPayload =
-  | { event_version: 1; payload: TransactionPostedPayloadV1 }
-  | { event_version: 2; payload: TransactionPostedPayloadV2 }
+  | {
+      event_type: "TransactionPosted"
+      event_version: 1
+      payload: TransactionPostedPayloadV1
+    }
+  | {
+      event_type: "TransactionPosted"
+      event_version: 2
+      payload: TransactionPostedPayloadV2
+    }
+  | {
+      event_type: "FundsHeld"
+      event_version: 1
+      payload: FundsHeldPayloadV1
+    }
+  | {
+      event_type: "HoldCaptured"
+      event_version: 1
+      payload: HoldCapturedPayloadV1
+    }
+  | {
+      event_type: "HoldReleased"
+      event_version: 1
+      payload: HoldReleasedPayloadV1
+    }
+
+export type EventType = VersionPayload["event_type"]
 
 export type EventVersion = VersionPayload["event_version"]
 
-export type LatestPayload = TransactionPostedPayloadV2
+export type LedgerEvent =
+  | {
+      event_type: "TransactionPosted"
+      payload: TransactionPostedPayloadV2
+    }
+  | { event_type: "FundsHeld"; payload: FundsHeldPayloadV1 }
+  | { event_type: "HoldCaptured"; payload: HoldCapturedPayloadV1 }
+  | { event_type: "HoldReleased"; payload: HoldReleasedPayloadV1 }
 
 export interface Event {
   global_seq: bigint
   event_id: string
-  event_type: "TransactionPosted"
+  // A plain string, like the column, for the same reason event_version is a
+  // number: the journal can hold a type this build has never heard of.
+  event_type: string
   // A plain number, like the column. Nothing in the schema constrains it, and
   // upcast is the single place that decides which versions exist — a second
   // declaration of that list is a second thing to keep in sync.
@@ -62,9 +126,23 @@ export interface Event {
   // Deliberately not correlated with event_version: this row came out of a
   // database, which cannot prove the two agree. Asserting that correlation is
   // exactly what upcast does, in one place, where it can be tested.
-  payload: TransactionPostedPayloadV1 | TransactionPostedPayloadV2
+  payload: unknown
   idempotency_key: string
   created_at: Date
+}
+
+export interface Hold {
+  hold_id: string
+  account_id: number
+  hold_account_id: number
+  amount: bigint
+  currency: Currency
+  status: "held" | "captured" | "released"
+  held_event_id: string
+  settled_event_id: string | null
+  expires_at: Date
+  created_at: Date
+  updated_at: Date
 }
 
 export interface Outbox {

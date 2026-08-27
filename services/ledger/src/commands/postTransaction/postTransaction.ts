@@ -3,13 +3,13 @@ import type { PoolClient } from "pg"
 import type { Currency } from "@ledgerrail/money"
 
 import { LATEST_EVENT_VERSION } from "../../events/index.js"
-import { TOPICS, transactionKey } from "../../kafka/index.js"
-import type {
-  Event,
-  Account,
-  AccountBalances,
-  TransactionPostedPayloadV2,
-} from "../../types.js"
+import type { TransactionPostedPayloadV2 } from "../../types.js"
+import { assertPostable, toPostings, type Leg } from "../guards.js"
+import {
+  appendEvent,
+  findByIdempotencyKey,
+  applyToAccountBalances,
+} from "../appendEvent.js"
 
 interface Posting {
   accountId: number
@@ -26,131 +26,47 @@ export async function postTransaction(
   input: PostTransactionInput,
   client: PoolClient
 ): Promise<{ globalSeq: string; eventId: string }> {
-  // Lock rows in a deterministic order (ascending account id) so concurrent transactions can't deadlock
-  const postings = [...input.postings].sort((a, b) => a.accountId - b.accountId)
-
-  // Shape checks: >= 2 postings, no zero-amount legs
-  if (postings.length < 2) {
-    throw new Error("Less legs found")
-  }
-  if (postings.some((p) => p.amount === 0n)) {
-    throw new Error("Invalid legs found")
+  // First, before anything is checked. A retry must return what the original
+  // returned — re-running the overdraft guard against funds the original already
+  // spent turns a successful retry into "Insufficient funds", which is precisely
+  // the failure 1.4 removed.
+  const replay = await findByIdempotencyKey(input.idempotencyKey, client)
+  if (replay) {
+    return { eventId: replay.eventId, globalSeq: replay.globalSeq }
   }
 
-  // INVARIANT: postings.reduce((s,p) => s+p.amount, 0n) === 0n -- else throw
-  const totalAmount = postings.reduce((s, p) => s + p.amount, 0n)
-  if (totalAmount !== 0n) throw new Error("Invalid transaction amounts")
+  const legs: Leg[] = input.postings.map((p) => ({
+    ...p,
+    currency: input.currency,
+  }))
 
-  // Load the referenced accounts; assert each exists and its currency === input.currency
-  const { rows: accounts } = await client.query<Account>(
-    `SELECT * FROM accounts WHERE id = ANY($1)`,
-    [postings.map((p) => p.accountId)]
-  )
+  const sorted = await assertPostable(legs, client)
 
-  const accountsSet = new Set(accounts.map((a) => a.id))
+  // The input still takes one currency for the transaction: v2 changed how the
+  // event is written, not what the ledger permits. Cross-currency is the saga's
+  // problem, behind a quote.
 
-  if (postings.some((p) => !accountsSet.has(p.accountId))) {
-    throw new Error("Invalid Accounts")
-  }
-  if (accounts.some((a) => a.currency !== input.currency)) {
-    throw new Error("Invalid Currency")
-  }
-
-  // Overdraft check
-  for (const leg of postings) {
-    if (leg.amount >= 0n) continue // only debits can overdraw
-
-    const account = accounts.find((a) => a.id === leg.accountId)
-    if (!account) throw new Error("Invalid Accounts")
-
-    // System accounts have no balance floor, so there is nothing to check here.
-    // Order matters: the type check must precede the lock. The system account
-    // participates in every funding transaction, so locking its balance row would
-    // serialize the entire ledger on a single row.
-    if (account.type === "system") continue
-
-    const { rows: balances } = await client.query<
-      Pick<AccountBalances, "pending" | "posted">
-    >(
-      `SELECT pending, posted FROM account_balances WHERE account_id = $1 FOR UPDATE`,
-      [leg.accountId]
-    )
-
-    const available = (balances[0]?.posted ?? 0n) + (balances[0]?.pending ?? 0n)
-    if (available + leg.amount < 0n) throw new Error("Insufficient funds")
-  }
-
-  // The input still takes one currency for the transaction: v2 changes how the
-  // event is written, not what the ledger permits. Cross-currency is Stage 3's
-  // problem, and letting it in here would make this checkpoint two checkpoints.
-  const eventPayload = JSON.stringify({
+  const payload: TransactionPostedPayloadV2 = {
     idempotencyKey: input.idempotencyKey,
-    postings: postings.map((p) => ({
-      accountId: p.accountId,
-      amount: String(p.amount),
-      currency: input.currency,
-    })),
-  } satisfies TransactionPostedPayloadV2)
-  const { rows: events } = await client.query<
-    Pick<Event, "global_seq" | "event_id" | "created_at" | "payload">
-  >(
-    `
-      INSERT INTO events (event_type, event_version, payload, idempotency_key)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (idempotency_key) DO NOTHING
-      RETURNING global_seq, event_id, created_at, payload;
-    `,
-    [
-      "TransactionPosted",
-      LATEST_EVENT_VERSION,
-      eventPayload,
-      input.idempotencyKey,
-    ]
-  )
-
-  // If zero rows, it's a replay, return ids, and do NOT touch balances
-  if (!events[0]) {
-    const { rows: replayEvent } = await client.query<
-      Pick<Event, "global_seq" | "event_id">
-    >(`SELECT global_seq, event_id FROM events WHERE idempotency_key = $1`, [
-      input.idempotencyKey,
-    ])
-    if (!replayEvent[0]) {
-      throw new Error(
-        "A replay was detected but the original isn't visible yet."
-      )
-    }
-
-    return {
-      eventId: replayEvent[0].event_id,
-      globalSeq: String(replayEvent[0].global_seq),
-    }
+    postings: toPostings(sorted),
   }
 
-  // Otherwise, new event, apply balance updates
-  const { event_id: eventId, global_seq: globalSeq } = events[0]
-
-  await client.query(
-    `
-      INSERT INTO outbox (event_id, global_seq, topic, partition_key)
-      VALUES ($1, $2, $3, $4)
-    `,
-    [eventId, globalSeq, TOPICS.LEDGER_EVENTS, transactionKey(eventId)]
+  const appended = await appendEvent(
+    "TransactionPosted",
+    LATEST_EVENT_VERSION.TransactionPosted,
+    payload,
+    input.idempotencyKey,
+    client
   )
 
-  for (const leg of postings) {
-    await client.query(
-      `
-      INSERT INTO account_balances (account_id, posted)
-      VALUES ($1, $2)
-      ON CONFLICT (account_id)
-      DO UPDATE SET 
-        posted = account_balances.posted + EXCLUDED.posted,
-        updated_at = NOW()
-    `,
-      [leg.accountId, leg.amount]
-    )
+  // Still reachable: two concurrent callers both found no row above, both passed
+  // the guard, and one lost the ON CONFLICT race. The loser must not apply
+  // balances a second time.
+  if (appended.replayed) {
+    return { eventId: appended.eventId, globalSeq: appended.globalSeq }
   }
 
-  return { globalSeq: String(globalSeq), eventId }
+  await applyToAccountBalances(payload.postings, client)
+
+  return { eventId: appended.eventId, globalSeq: appended.globalSeq }
 }

@@ -4,6 +4,7 @@ import type { Event } from "../src/types.js"
 import { getTestPool, testTransaction } from "./db.js"
 import { randomString } from "../src/utils/helpers.js"
 import { TOPICS, GROUPS, transactionKey } from "../src/kafka/utils.js"
+import { rebuildBalances } from "../src/projections/balanceProjection/index.js"
 import { makeMessageHandler } from "../src/projections/balanceProjection/consumer.js"
 import {
   postTransaction,
@@ -119,4 +120,17 @@ export async function postAndProject(
   await projectEvents(transactions.map((r) => r.eventId))
 
   return transactions
+}
+
+export async function resetProjection(client: PoolClient) {
+  await client.query("DELETE FROM balance_snapshots")
+
+  try {
+    await client.query("BEGIN")
+    await rebuildBalances(client)
+    await client.query("COMMIT")
+  } catch (err) {
+    await client.query("ROLLBACK")
+    throw err
+  }
 }

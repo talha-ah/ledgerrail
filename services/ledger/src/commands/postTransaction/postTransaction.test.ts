@@ -89,7 +89,7 @@ describe("Post Transaction", () => {
     }
 
     await expect(postTransaction(input, client)).rejects.toThrow(
-      "Invalid Accounts"
+      "Invalid accounts"
     )
   })
 
@@ -110,7 +110,7 @@ describe("Post Transaction", () => {
     }
 
     await expect(postTransaction(input, client)).rejects.toThrow(
-      "Invalid Currency"
+      "Invalid currency"
     )
   })
 
@@ -354,5 +354,73 @@ describe("Idempotency Race", () => {
     )
 
     expect(outbox[0]?.n).toBe(1) // exactly one intent to publish, ever
+  })
+})
+
+describe("Idempotency Replay", () => {
+  let pool: Pool
+  let client: PoolClient
+
+  beforeAll(async () => {
+    pool = getTestPool()
+    client = await pool.connect()
+  })
+
+  afterAll(async () => {
+    client?.release()
+  })
+
+  it("returns the original result when a key is replayed after the balance moved", async () => {
+    const { s, a } = await createAccounts(client)
+
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO accounts (account_number, currency, type)
+       VALUES ($1, 'PKR', 'asset') RETURNING id;`,
+      [randomString()]
+    )
+    const b = rows[0]!.id
+
+    const transfer = (amount: bigint, idempotencyKey: string) =>
+      postTransaction(
+        {
+          idempotencyKey,
+          currency: "PKR",
+          postings: [
+            { accountId: a, amount: -amount },
+            { accountId: b, amount },
+          ],
+        },
+        client
+      )
+
+    await postTransaction(
+      {
+        idempotencyKey: randomString(),
+        currency: "PKR",
+        postings: [
+          { accountId: s, amount: -100n },
+          { accountId: a, amount: 100n },
+        ],
+      },
+      client
+    )
+
+    const key = randomString()
+    const original = await transfer(60n, key)
+
+    // Drain what is left under a different key, so the retry below cannot pass
+    // the overdraft guard on its own merits.
+    await transfer(40n, randomString())
+
+    const retried = await transfer(60n, key)
+
+    expect(retried).toEqual(original)
+
+    // And it did not move money a second time.
+    const { rows: balances } = await client.query<{ posted: bigint }>(
+      "SELECT posted FROM account_balances WHERE account_id = $1",
+      [b]
+    )
+    expect(balances[0]?.posted).toBe(100n)
   })
 })

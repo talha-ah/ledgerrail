@@ -11,6 +11,8 @@ export function validateEvent(event: unknown): event is EventEnvelope {
     typeof e.global_seq === "string" &&
     typeof e.created_at === "string" &&
     typeof e.event_version === "number" &&
-    e.event_type === "TransactionPosted"
+    // Not a known type, just a type. Which types exist is upcast's business —
+    // duplicating that list here is how the gate and the upcaster drift apart.
+    typeof e.event_type === "string"
   )
 }

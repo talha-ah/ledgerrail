@@ -29,30 +29,45 @@ describe("upcast", () => {
   }
 
   it("gives every v1 leg the transaction's currency", () => {
-    const out = upcast({ event_version: 1, payload: v1 })
+    const out = upcast({
+      event_type: "TransactionPosted",
+      event_version: 1,
+      payload: v1,
+    })
 
-    expect(out).toEqual(v2)
+    expect(out.payload).toEqual(v2)
   })
 
   it("loses nothing a v1 event carried", () => {
-    const out = upcast({ event_version: 1, payload: v1 })
+    const { payload } = upcast({
+      payload: v1,
+      event_version: 1,
+      event_type: "TransactionPosted",
+    })
 
     // The amounts and accounts survive untouched — the upcast adds, it does not
     // reinterpret. If this ever needs a conversion, the version is lying.
-    expect(out.postings.map((l) => [l.accountId, l.amount])).toEqual(
+    expect(payload.postings.map((l) => [l.accountId, l.amount])).toEqual(
       v1.postings.map((l) => [l.accountId, l.amount])
     )
   })
 
   it("leaves a v2 payload alone", () => {
-    expect(upcast({ event_version: 2, payload: v2 })).toBe(v2)
+    expect(
+      upcast({ event_type: "TransactionPosted", event_version: 2, payload: v2 })
+        .payload
+    ).toBe(v2)
   })
 
   it("refuses a version it has never heard of", () => {
     // A message from a newer deploy. Permanent for this build, so it dead-letters
     // and a redrive picks it up after the upgrade.
-    expect(() => upcast({ event_version: 10, payload: {} })).toThrow(
-      PermanentError
-    )
+    expect(() =>
+      upcast({
+        payload: {},
+        event_version: 10,
+        event_type: "TransactionPosted",
+      })
+    ).toThrow(PermanentError)
   })
 })

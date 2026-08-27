@@ -1,12 +1,20 @@
 import { assertNever, PermanentError } from "../utils/error.js"
 import type {
-  LatestPayload,
+  LedgerEvent,
   VersionPayload,
+  FundsHeldPayloadV1,
+  HoldCapturedPayloadV1,
+  HoldReleasedPayloadV1,
   TransactionPostedPayloadV1,
   TransactionPostedPayloadV2,
 } from "../types.js"
 
-export const LATEST_EVENT_VERSION = 2
+export const LATEST_EVENT_VERSION = {
+  TransactionPosted: 2,
+  FundsHeld: 1,
+  HoldCaptured: 1,
+  HoldReleased: 1,
+}
 
 /**
  * v1 carried one currency for the whole transaction, and the command has always
@@ -28,47 +36,90 @@ function v1ToV2(
   }
 }
 
-/**
- * Unknown to known. The only place in the system that decides which versions
- * exist — and the cast is the trust boundary: the envelope has been validated,
- * the payload's interior has not. Per-version payload validation is the
- * upgrade path from here, and is most of what a schema registry sells you.
- */
-function asVersioned(event: {
+interface WireEvent {
+  event_type: string
   event_version: number
   payload: unknown
-}): VersionPayload {
-  switch (event.event_version) {
-    case 1:
-      return {
-        event_version: 1,
-        payload: event.payload as TransactionPostedPayloadV1,
-      }
-    case 2:
-      return {
-        event_version: 2,
-        payload: event.payload as TransactionPostedPayloadV2,
-      }
-    default:
-      // Not corruption — a message from the future, produced by a newer deploy.
-      // Permanent for this build, which is precisely what a dead letter plus a
-      // redrive after the upgrade is for.
-      throw new PermanentError(`unknown event version: ${event.event_version}`)
-  }
 }
 
-export function upcast(event: {
-  event_version: number
-  payload: unknown
-}): LatestPayload {
-  const versioned = asVersioned(event)
+function asKnown(event: WireEvent): VersionPayload {
+  const { event_type: type, event_version: version, payload } = event
 
-  switch (versioned.event_version) {
-    case 1:
-      return v1ToV2(versioned.payload)
-    case 2:
-      return versioned.payload
+  switch (type) {
+    case "TransactionPosted":
+      if (version === 1)
+        return {
+          event_type: type,
+          event_version: version,
+          payload: payload as TransactionPostedPayloadV1,
+        }
+      if (version === 2)
+        return {
+          event_type: type,
+          event_version: version,
+          payload: payload as TransactionPostedPayloadV2,
+        }
+
+      break
+    case "FundsHeld":
+      if (version === 1)
+        return {
+          event_type: type,
+          event_version: version,
+          payload: payload as FundsHeldPayloadV1,
+        }
+      break
+    case "HoldCaptured":
+      if (version === 1)
+        return {
+          event_type: type,
+          event_version: version,
+          payload: payload as HoldCapturedPayloadV1,
+        }
+      break
+    case "HoldReleased":
+      if (version === 1)
+        return {
+          event_type: type,
+          event_version: version,
+          payload: payload as HoldReleasedPayloadV1,
+        }
+      break
+  }
+
+  // A type or version this build has never heard of — a message from the future,
+  // permanent for this code, which is what the dead letter and a redrive after
+  // the upgrade are for.
+  throw new PermanentError(`unknown event: ${type} v${version}`)
+}
+
+export function upcast(event: WireEvent): LedgerEvent {
+  const known = asKnown(event)
+
+  switch (known.event_type) {
+    case "TransactionPosted":
+      switch (known.event_version) {
+        case 1:
+          return {
+            event_type: known.event_type,
+            payload: v1ToV2(known.payload),
+          }
+        case 2:
+          return {
+            event_type: known.event_type,
+            payload: known.payload,
+          }
+        default:
+          return assertNever(known)
+      }
+    case "FundsHeld":
+    case "HoldCaptured":
+    case "HoldReleased":
+      return {
+        event_type: known.event_type,
+        payload: known.payload,
+      } as LedgerEvent
     default:
-      return assertNever(versioned)
+      return assertNever(known)
   }
 }

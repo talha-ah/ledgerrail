@@ -165,7 +165,7 @@ describe("Dead letter queue", () => {
     await expect(wrapped()(raw(encode(env)))).resolves.toBeUndefined()
 
     const [row] = await deadLetters()
-    expect(row?.error).toMatch(/unknown event version/)
+    expect(row?.error).toMatch(/unknown event/)
     // Decoding got far enough to identify it, even though validation did not.
     expect(row?.event_id).toBe(env.event_id)
     expect(await balanceOf(assetId)).toBe(0n)
@@ -317,7 +317,7 @@ describe("Dead letter queue", () => {
     await expect(wrapped()(raw(encode(env)))).resolves.toBeUndefined()
 
     const [row] = await deadLetters()
-    expect(row?.error).toMatch(/unknown event version/)
+    expect(row?.error).toMatch(/unknown event/)
     expect(await balanceOf(assetId)).toBe(0n)
 
     // The claim and the effect share a transaction, so a rejected event leaves
