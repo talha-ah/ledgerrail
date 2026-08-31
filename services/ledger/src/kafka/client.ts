@@ -20,3 +20,8 @@ export function getKafka(): Kafka {
 
   return kafka
 }
+
+/** Drops the memoized client, and with it kafkajs's cached view of the cluster. */
+export function resetKafka() {
+  kafka = null
+}

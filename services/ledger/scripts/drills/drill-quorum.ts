@@ -20,8 +20,12 @@ import { publishBatch } from "../../src/relay/relay.js"
 import { bootstrap, shutdown } from "../../src/index.js"
 import { errorMessage } from "../../src/utils/error.js"
 import { randomString } from "../../src/utils/helpers.js"
-import { getKafka, type ProducerHandle } from "../../src/kafka/index.js"
 import { postTransaction } from "../../src/commands/postTransaction/index.js"
+import {
+  getKafka,
+  resetKafka,
+  type ProducerHandle,
+} from "../../src/kafka/index.js"
 
 const AMOUNT = 100n
 const DURING_OUTAGE = 3
@@ -239,6 +243,7 @@ async function main() {
 
     // A fresh producer: the old one's connections were torn down mid-outage.
     await producer.disconnect()
+    resetKafka()
     producer = await impatientProducer()
 
     const deadline = Date.now() + 60_000

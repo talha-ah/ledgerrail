@@ -37,9 +37,9 @@ One majority loss, three distinct client symptoms — all observed:
 
 ```mermaid
 flowchart TB
-    Q["2 of 3 brokers gone"] --> S1["ECONNREFUSED<br/>the leader's machine is gone"]
-    Q --> S2["leaderless_partitions<br/>no majority to elect a replacement"]
-    Q --> S3["Broker 1 not found in cached metadata<br/>metadata itself needs the controller quorum"]
+    Q["2 of 3 brokers gone"] --> S1["no leader for this topic-partition<br/>no majority to elect one — the strong evidence"]
+    Q --> S2["ECONNREFUSED to the old leader<br/>only proves a machine is gone"]
+    Q --> S3["not the correct controller / broker not available<br/>metadata itself needs the controller quorum"]
 ```
 
 ## Step by step
@@ -84,24 +84,36 @@ or a cluster property, and the create-topic call accepted it and ignored it. The
 Raft: each partition is its own Raft group, and an RF=3 partition needs two of its three replicas to
 elect a leader or commit a write.
 
-The sharpest evidence is in the health dump — only **one** of three partitions went leaderless. The
-other two kept their leader on the surviving broker and still could not take a write, because a
-leader with no majority cannot commit. The constraint is a majority, not reachability.
+The sharpest evidence is the produce error, not the health dump:
+
+```
+There is no leader for this topic-partition as we are in the middle of a leadership election
+```
+
+That is the surviving broker saying it *has* the partition and cannot elect a leader for it. A
+`ECONNREFUSED` — which earlier runs produced — only proves the machine holding the leader is gone,
+and a single-broker cluster fails that way too. This message has no explanation other than a
+missing majority.
+
+**Trust the produce path over the health dump.** `rpk cluster health` is answered from the local
+node's own report, which is computed periodically and lags: a run has shown
+`Leaderless partitions (0)` while the producer was simultaneously being told there was no leader,
+and has shown `Nodes down: [1 2]` for minutes after both nodes had rejoined. Ask the controller if
+you want the cluster's view, and treat a non-controller's answer as one node's opinion.
 
 ## A passing run
 
 ```
 [DRILL] ok — outbox drained before the outage
 [DRILL] stopping redpanda-1, redpanda-2 — keeping redpanda-0 alive
-[DRILL] cluster noticed after 106ms
+[DRILL] cluster noticed after 96ms
 Healthy:                          false
-Unhealthy reasons:                [leaderless_partitions nodes_down]
+Unhealthy reasons:                [nodes_down]
 Nodes down:                       [1 2]
-Leaderless partitions (1):        [kafka/ledger.events/2]
 [DRILL] ok — the surviving broker reports the cluster unhealthy — quorum lost
 [DRILL] ok — 3 transactions committed with the cluster below quorum
 [DRILL] ok — the outbox absorbed all 3 — nothing was lost, nothing published
-[DRILL] publish failed with: Broker 1 not found in the cached metadata
+[DRILL] publish failed with: There is no leader for this topic-partition as we are in the middle of a leadership election
 [DRILL] ok — the relay could not publish — the partition leader was gone …
 [DRILL] restarting redpanda-1, redpanda-2
 [DRILL] ok — the relay drained the backlog once the cluster recovered

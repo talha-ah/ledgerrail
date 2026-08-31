@@ -153,3 +153,50 @@ export interface Outbox {
   published_at?: Date
   created_at: Date
 }
+
+export type PaymentState =
+  | "initiated"
+  | "held"
+  | "quoted"
+  | "settling"
+  | "settled"
+  | "completed"
+  | "compensating"
+  | "compensated"
+  | "failed"
+
+export type PaymentStepName = "quote" | "settle" | "reverse"
+export type StepStatus = "started" | "succeeded" | "failed"
+
+export interface Payment {
+  payment_id: string
+  idempotency_key: string
+  state: PaymentState
+  source_account_id: number
+  destination_reference: string
+  amount: bigint
+  currency: Currency
+  target_currency: Currency
+  hold_id: string | null
+  quote_rate: string | null // NUMERIC arrives as a string, deliberately
+  quote_expires_at: Date | null
+  attempts: number
+  next_attempt_at: Date
+  last_error: string | null
+  request_fingerprint: string
+  created_at: Date
+  updated_at: Date
+}
+
+export interface PaymentStep {
+  payment_id: string
+  step: PaymentStepName
+  attempt: number
+  idempotency_key: string
+  status: StepStatus
+  request: unknown
+  response: unknown
+  error: string | null
+  started_at: Date
+  finished_at: Date | null
+}

@@ -94,7 +94,7 @@ async function project(client: PoolClient) {
   )
 
   const { rows } = await client.query<Event>(
-    `SELECT global_seq, event_version, payload, created_at
+    `SELECT global_seq, event_type, event_version, payload, created_at
        FROM events WHERE global_seq > $1 ORDER BY global_seq`,
     [String(cursor[0]?.seq ?? 0)]
   )

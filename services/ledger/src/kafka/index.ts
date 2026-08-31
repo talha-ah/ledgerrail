@@ -1,5 +1,5 @@
 export type * from "./types.js"
-export { getKafka } from "./client.js"
+export { getKafka, resetKafka } from "./client.js"
 export { createTopic, createTopics } from "./admin.js"
 export { createProducer, type ProducerHandle } from "./producer.js"
 export {

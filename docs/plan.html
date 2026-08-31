@@ -160,7 +160,7 @@
   <div class="stat-strip">
     <div class="stat"><span class="k">Current stage</span><span class="v accent">3 of 7</span></div>
     <div class="stat"><span class="k">Stages 1&ndash;2</span><span class="v">complete</span></div>
-    <div class="stat"><span class="k">Working on</span><span class="v">3.2</span></div>
+    <div class="stat"><span class="k">Working on</span><span class="v">3.3</span></div>
     <div class="stat"><span class="k">Budget</span><span class="v">6&ndash;8 weeks</span></div>
   </div>
 
@@ -712,8 +712,31 @@
         <div class="cp-main">
           <h4>Saga state</h4>
           <p class="cp-sum">A <code>payments</code> table and its state machine, plus the crash-safe transition rule &mdash; record the intent, act, record the outcome, because you cannot atomically call a bank and record that you called it.</p>
+          <div class="block">
+            <span class="lbl">Built</span>
+            <ul>
+              <li><strong>The dual-write problem returns and the outbox cannot solve it.</strong> The outbox works because both halves are systems we own; across a third-party rail, at-least-once means calling the bank twice. What replaces atomicity is an intent committed before the call and a key the bank honours (<a href="decisions/0011-saga-state.md">ADR 0011</a>)</li>
+              <li>Two tables: <code>payments</code> for current state, <code>payment_steps</code> append-only per attempt. <strong>The saga log is deliberately not the journal</strong> &mdash; retries and timeouts are operational facts, and in the journal every future rebuild would replay our outages</li>
+              <li>Nine states, each naming a <em>crash window</em> rather than a phase: <code>settling</code> and <code>settled</code> are separate because the gap between them is the only place we do not know what happened. Transitions are compare-and-set, checked twice &mdash; in TypeScript against the transition table, in SQL against a racing writer &mdash; and terminality is derived from the table rather than declared beside it</li>
+              <li><code>beginStep</code> commits the rail's idempotency key <strong>before</strong> the call, so a crash leaves a row saying &ldquo;we were about to do X with key K&rdquo; &mdash; which is what 3.5&rsquo;s reconciler needs. The key is per <em>step</em>, never per attempt: a retry that invents a new key is a second payment as far as the bank is concerned</li>
+              <li><code>SELECT &hellip; FOR UPDATE SKIP LOCKED</code> so two orchestrators cooperate rather than queue &mdash; but the lock is held only long enough to <em>record</em> the claim, because the call must happen outside any transaction. <strong>The durable claim is the state plus <code>next_attempt_at</code></strong>, a lease a dead worker eventually gives up</li>
+              <li><code>startPayment</code> inserts through a <code>SELECT</code> over <code>accounts</code>, so a payment whose source account is missing or denominated in another currency is refused at the door rather than discovering it at the hold</li>
+            </ul>
+          </div>
+          <div class="block caught">
+            <span class="lbl">Caught in review</span>
+            <ul>
+              <li><strong>A test that asserted idempotency while sending a different request every time.</strong> The helper generated a fresh destination on each call, so &ldquo;is idempotent on the caller&rsquo;s key&rdquo; replayed a different body and passed because nothing compared them. Adding a request fingerprint failed it on the first run &mdash; the check did not break the test, it revealed the test had never been checking.</li>
+              <li><strong>An idempotency key identifies a request, not a payment.</strong> Returning the original for a different body tells a caller their new payment succeeded when it was never started, which is worse than either error it replaces.</li>
+              <li><strong>The claim could not survive the thing it was claiming for.</strong> <code>FOR UPDATE</code> lasts as long as its transaction, and the whole design forbids holding a transaction across a network call &mdash; so the API as written invited exactly the mistake the checkpoint exists to prevent. The state machine already held the answer; it just was not written down.</li>
+              <li>A column provisioned and unwritable: <code>attempts</code> existed with no way to increment it, so it would have read zero forever.</li>
+              <li>Inlining a parameter renumbers every parameter after it. <code>LIMIT $2</code> outlived its <code>$1</code>, and Postgres named the <em>orphan</em> rather than the shift: <code>could not determine data type of parameter $1</code>.</li>
+              <li><strong>Rollback in the <code>try</code>, not the <code>finally</code></strong> &mdash; a throwing assertion returned a connection to the pool mid-transaction, and the next test to borrow it died at <code>BEGIN</code>. One bug looked like three. The fix then landed in only the test that had failed, rather than in all three with the same defect.</li>
+              <li>A partial index cannot be matched against a predicate the planner will not see until execution, so the claim query must repeat the index&rsquo;s <code>WHERE</code> as a literal &mdash; the one duplication in the design, and now commented as such.</li>
+            </ul>
+          </div>
         </div>
-        <div class="cp-status"><span class="chip now">Current</span></div>
+        <div class="cp-status"><span class="chip ok">Done</span></div>
       </div>
 
       <div class="cp">
@@ -722,7 +745,7 @@
           <h4>The orchestrator</h4>
           <p class="cp-sum">Hold &rarr; quote &rarr; settle &rarr; commit, happy path end to end.</p>
         </div>
-        <div class="cp-status"><span class="chip wait">Planned</span></div>
+        <div class="cp-status"><span class="chip now">Current</span></div>
       </div>
 
       <div class="cp">
@@ -1085,7 +1108,7 @@
         </div>
         <div class="item">
           <span class="h">Topics are infrastructure, not application startup.</span>
-          <span class="b">If the relay and the consumer both call <code>createTopic</code>, whichever boots first decides the partition count &mdash; permanently. Provision topics explicitly (a <code>topics:create</code> script run after <code>docker compose up</code>, or a deploy step) so the decision is deliberate and reviewable in one place, and every process assumes the topic already exists. In production, turn <strong>auto-create off</strong> too: it silently creates a new topic on a typo&rsquo;d name, with default partitions, instead of failing loudly.</span>
+          <span class="b">If the relay and the consumer both call <code>createTopic</code>, whichever boots first decides the partition count &mdash; permanently. Provision topics explicitly (a <code>topics:create</code> script run after <code>docker compose up</code>, or a deploy step) so the decision is deliberate and reviewable in one place, and every process assumes the topic already exists. In production, turn <strong>auto-create off</strong> too: it silently creates a new topic on a typo&rsquo;d name, with default partitions, instead of failing loudly. <strong>It cost a drill run here.</strong> After a <code>docker compose down -v</code> wiped the brokers, the first producer auto-created <code>ledger.events</code> with one partition and RF=1 &mdash; so the quorum drill ran against a topic with no majority to lose, reported <code>Leaderless partitions (0)</code>, and passed for entirely the wrong reason. Turning it off is not a one-line command either, because <code>auto_create_topics_enabled</code> is a <em>cluster</em> property living in the controller log: <code>rpk cluster config set</code> works until the next <code>down -v</code> takes the controller log with it. It has to be bootstrapped &mdash; a <code>.bootstrap.yaml</code> mounted at <code>/etc/redpanda/</code> on every broker, since any of them may be the one that forms the cluster.</span>
         </div>
         <div class="item ask">
           <span class="h">Three options for a message you can&rsquo;t handle.</span>
