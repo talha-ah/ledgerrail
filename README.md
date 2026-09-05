@@ -172,6 +172,8 @@ Correctness is proven by breaking things on purpose. Each drill has a script, a 
 ## Design decisions & tradeoffs
 
 The details a staff interview actually probes — documented in [`docs/decisions/`](docs/decisions) as ADRs.
+[`docs/flows/`](docs/flows) draws the same story: one document per checkpoint, each showing the
+architecture before it, the mechanism it introduced, and the architecture after.
 
 - **SAGA over 2PC** — a third-party bank exposes no prepare/commit phase, so distributed transactions are impossible; we accept eventual-consistency windows and compensations in exchange for being able to transact at all.
 - **At-least-once + idempotent consumers over Kafka EOS** — simpler operational model, no transactional-producer coupling; correctness moves to the inbox instead of the broker.
@@ -202,7 +204,8 @@ ledger-rail/
 ├── load/               # k6 scenarios
 └── docs/
     ├── architecture.md
-    └── decisions/      # ADRs
+    ├── decisions/      # ADRs — why
+    └── flows/          # per-checkpoint before / change / after diagrams
 ```
 
 ---
