@@ -178,10 +178,12 @@ export interface Payment {
   currency: Currency
   target_currency: Currency
   hold_id: string | null
+  quote_id: string | null
   quote_rate: string | null // NUMERIC arrives as a string, deliberately
   quote_expires_at: Date | null
   attempts: number
   next_attempt_at: Date
+  lease_token: string | null
   last_error: string | null
   request_fingerprint: string
   created_at: Date

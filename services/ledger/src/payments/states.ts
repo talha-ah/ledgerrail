@@ -11,15 +11,14 @@ import type { PaymentState } from "../types.js"
 export const TRANSITIONS: Record<PaymentState, readonly PaymentState[]> = {
   initiated: ["held", "failed"],
   held: ["quoted", "compensating"],
-  quoted: ["settling", "compensating"],
 
-  // Not to `failed` directly: a settlement that definitively did not happen
-  // still leaves a hold to return, and skipping compensation strands a
-  // customer's money.
+  // Back to `held` is a re-pricing, not a rollback: the funds are still
+  // reserved, only the price went stale. It has to be taken *before* `settling`
+  // is entered — once it is, the settle may already have reached the bank and
+  // the only way out is forward, which is why `settling` has no edge back here.
+  quoted: ["settling", "held", "compensating"],
+
   settling: ["settled", "compensating"],
-
-  // The bank has paid. Compensating from here means sending money back, which
-  // is a new payment rather than an undo — 3.4's harder case.
   settled: ["completed", "compensating"],
 
   completed: [],

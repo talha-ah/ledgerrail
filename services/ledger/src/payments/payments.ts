@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg"
 import { createHash, randomUUID } from "node:crypto"
 
+import { errorCode } from "../utils/error.js"
 import type { Currency } from "@ledgerrail/money"
 import { canTransition, stepKey } from "./states.js"
 import type {
@@ -118,12 +119,28 @@ export async function startPayment(
 
 export interface AdvanceFields {
   holdId?: string
+  quoteId?: string
   quoteRate?: string
   quoteExpiresAt?: Date
   nextAttemptAt?: Date
   lastError?: string | null
   /** Count this transition as an attempt at a side effect, not just a move. */
   bumpAttempts?: boolean
+  /**
+   * A completed step resets the budget, because the budget is per *step*.
+   * Without it, three quote failures plus two settle failures abandons a payment
+   * that never failed the same thing twice in a row — and every successful move
+   * spending from the same pool is the exact conflation ADR 0011 warned about.
+   */
+  resetAttempts?: boolean
+  /**
+   * When set, the transition also requires this worker still hold the lease.
+   *
+   * Only the abandon path needs it. Forward transitions are self-fencing —
+   * they change the state, so a second one finds nothing — but abandonment
+   * leaves from a state the rightful owner is still working in.
+   */
+  leaseToken?: string | null
 }
 
 /**
@@ -152,18 +169,22 @@ export async function advance(
         -- COALESCE rather than dynamic SQL: an omitted field is left alone, and
         -- the statement stays one fixed string with bound parameters.
         hold_id          = COALESCE($4, hold_id),
-        quote_rate       = COALESCE($5, quote_rate),
-        quote_expires_at = COALESCE($6, quote_expires_at),
-        next_attempt_at  = COALESCE($7, next_attempt_at),
+        quote_id         = COALESCE($5, quote_id),
+        quote_rate       = COALESCE($6, quote_rate),
+        quote_expires_at = COALESCE($7, quote_expires_at),
+        next_attempt_at  = COALESCE($8, next_attempt_at),
         -- Not COALESCEd, unlike the fields above: a successful transition means
         -- the previous failure is history, so an omitted lastError clears it.
-        last_error       = $8,
+        last_error       = $9,
         -- Explicit rather than automatic: "how many times has this been tried"
         -- and "how many times has this moved" are different questions, and they
         -- stop agreeing the moment compensation starts moving it too.
-        attempts         = attempts + CASE WHEN $9::boolean THEN 1 ELSE 0 END,
+        attempts         = CASE WHEN $11::boolean THEN 0
+                                WHEN $10::boolean THEN attempts + 1
+                                ELSE attempts END,
         updated_at       = NOW()
     WHERE payment_id = $1 AND state = $2
+      AND ($12::uuid IS NULL OR lease_token = $12)
     RETURNING *;
     `,
     [
@@ -171,11 +192,14 @@ export async function advance(
       from,
       to,
       fields.holdId ?? null,
+      fields.quoteId ?? null,
       fields.quoteRate ?? null,
       fields.quoteExpiresAt ?? null,
       fields.nextAttemptAt ?? null,
       fields.lastError ?? null,
       fields.bumpAttempts ?? false,
+      fields.resetAttempts ?? false,
+      fields.leaseToken ?? null,
     ]
   )
 
@@ -227,22 +251,40 @@ export async function beginStep(
   request: unknown,
   client: PoolClient
 ): Promise<PaymentStep> {
-  const { rows } = await client.query<PaymentStep>(
-    `
+  let rows: PaymentStep[]
+
+  try {
+    const result = await client.query<PaymentStep>(
+      `
     INSERT INTO payment_steps
-      (payment_id, step, attempt, idempotency_key, status, request)
-    SELECT $1, $2, COALESCE(MAX(attempt), 0) + 1, $3, 'started', $4
-      FROM payment_steps
-     WHERE payment_id = $1 AND step = $2
-    RETURNING *;
+        (payment_id, step, attempt, idempotency_key, status, request)
+      SELECT $1, $2, COALESCE(MAX(attempt), 0) + 1, $3, 'started', $4
+        FROM payment_steps
+       WHERE payment_id = $1 AND step = $2
+      RETURNING *;
     `,
-    [
-      paymentId,
-      step,
-      stepKey(paymentId, step),
-      request === undefined ? null : JSON.stringify(request),
-    ]
-  )
+      [
+        paymentId,
+        step,
+        stepKey(paymentId, step),
+        request === undefined ? null : JSON.stringify(request),
+      ]
+    )
+
+    rows = result.rows
+  } catch (err) {
+    // Two workers raced MAX(attempt) + 1. 23505 sits in the class isPermanent
+    // treats as permanent — correct for a constraint the data will always
+    // violate, wrong for one the next pass will not. Reclassified here rather
+    // than in isPermanent, because it is this query that knows the difference.
+    // Left permanent, a benign write conflict abandons a payment to
+    // `compensating` before the rail is called at all.
+    if (errorCode(err) === "23505") {
+      throw new Error("payment_steps attempt number collided", { cause: err })
+    }
+
+    throw err
+  }
 
   if (!rows[0]) throw new Error("failed to record step intent")
   return rows[0]
@@ -281,6 +323,27 @@ export async function finishStep(
   }
 }
 
+/**
+ * How many times a step has been attempted, ever.
+ *
+ * Distinct from `payments.attempts`, which is a per-step retry budget and is
+ * reset by every completed step. This one never resets, because the step log is
+ * append-only — which makes it the only honest bound on a cycle that *completes*
+ * a step each time round.
+ */
+export async function countSteps(
+  paymentId: string,
+  step: PaymentStepName,
+  client: PoolClient
+): Promise<number> {
+  const { rows } = await client.query<{ n: number }>(
+    "SELECT COUNT(*)::int AS n FROM payment_steps WHERE payment_id = $1 AND step = $2",
+    [paymentId, step]
+  )
+
+  return rows[0]?.n ?? 0
+}
+
 /** The attempts whose result was never learned — 3.5's reconciler reads these. */
 export async function unfinishedSteps(
   paymentId: string,
@@ -294,4 +357,125 @@ export async function unfinishedSteps(
   )
 
   return rows
+}
+
+export async function getPayment(
+  paymentId: string,
+  client: PoolClient
+): Promise<Payment | null> {
+  const { rows } = await client.query<Payment>(
+    "SELECT * FROM payments WHERE payment_id = $1",
+    [paymentId]
+  )
+
+  return rows[0] ?? null
+}
+
+/**
+ * Takes the lease on a claimed payment: same state, pushed out by LEASE_MS,
+ * stamped with a token that says whose it now is.
+ *
+ * No fence beyond the state — this runs inside the claim's FOR UPDATE, so the
+ * row lock already guarantees exclusivity. The token it writes is what makes the
+ * *later* fence possible, once the lock is long gone.
+ */
+export async function takeLease(
+  payment: Pick<Payment, "payment_id" | "state">,
+  client: PoolClient,
+  ms = LEASE_MS
+): Promise<Payment | null> {
+  const { rows } = await client.query<Payment>(
+    `
+    UPDATE payments
+    SET lease_token     = $3,
+        next_attempt_at = $4,
+        updated_at      = NOW()
+    WHERE payment_id = $1 AND state = $2
+    RETURNING *;
+    `,
+    [payment.payment_id, payment.state, randomUUID(), leaseUntil(ms)]
+  )
+
+  return rows[0] ?? null
+}
+
+export const MAX_ATTEMPTS = 5
+const BACKOFF_BASE_MS = 1_000
+const BACKOFF_CEILING_MS = 5 * 60_000
+
+/**
+ * Exponential, capped, jittered.
+ *
+ * The ceiling matters more than the curve — without one, a payment that has
+ * failed twenty times is scheduled past the end of the business and the
+ * difference between "retrying slowly" and "abandoned" stops being visible in
+ * the table. The jitter matters because rails fail *collectively*: every
+ * payment in flight fails in the same second, and an undithered backoff marches
+ * them all back at the recovering rail together.
+ */
+export function backoffMs(attempts: number): number {
+  const base = Math.min(
+    BACKOFF_CEILING_MS,
+    BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1)
+  )
+
+  return Math.round(base * (0.8 + Math.random() * 0.4))
+}
+
+export interface RescheduleFields {
+  nextAttemptAt: Date
+  lastError: string
+  bumpAttempts?: boolean
+}
+
+/**
+ * The sibling `advance` has needed since 3.2 and did not have.
+ *
+ * A transiently failed step must leave the payment exactly where it is and be
+ * looked at later, and `canTransition(s, s)` is false on purpose — staying is
+ * not a move, and putting self-transitions in the table would make every state
+ * look like it had somewhere to go.
+ *
+ * Compare-and-set anyway, for a reason that only shows up under a lease: a
+ * worker whose lease expired mid-call must not push the timer of a payment
+ * another worker has since taken further along. Same `WHERE`, different
+ * failure — here the loser is not overwriting a state, it is resurrecting one.
+ */
+export async function reschedule(
+  paymentId: string,
+  state: PaymentState,
+  /**
+   * The token this worker was handed at claim time. A worker whose lease expired
+   * mid-call must not push the backoff of a payment someone else has since
+   * taken — and state alone cannot tell the two apart, because both leave the
+   * payment exactly where it was.
+   */
+  leaseToken: string | null,
+  client: PoolClient,
+  fields: RescheduleFields
+): Promise<Payment> {
+  const { rows } = await client.query<Payment>(
+    `
+    UPDATE payments
+    SET next_attempt_at = $4,
+        last_error      = $5,
+        attempts        = attempts + CASE WHEN $6::boolean THEN 1 ELSE 0 END,
+        updated_at      = NOW()
+    WHERE payment_id = $1 AND state = $2 AND lease_token IS NOT DISTINCT FROM $3
+    RETURNING *;
+    `,
+    [
+      paymentId,
+      state,
+      leaseToken,
+      fields.nextAttemptAt,
+      fields.lastError,
+      fields.bumpAttempts ?? false,
+    ]
+  )
+
+  if (!rows[0])
+    throw new Error(`Payment ${paymentId} is no longer this worker's`)
+
+  return rows[0]
 }
