@@ -15,6 +15,7 @@
     "kafka:test": "tsx scripts/kafka-test.ts",
     "dlq:redrive": "tsx src/deadLetters/redrive.ts",
     "payments:worker": "tsx scripts/payment-worker.ts",
+    "holds:sweep": "tsx scripts/hold-sweeper.ts",
     "demo": "tsx scripts/demo.ts",
     "drill:crash": "tsx scripts/drills/drill-crash.ts",
     "drill:poison": "tsx scripts/drills/drill-poison.ts",

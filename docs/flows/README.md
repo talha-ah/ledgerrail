@@ -55,9 +55,10 @@ classDef gone stroke-dasharray:5 4
 | [3.1](3.1-holds.md) | Holds | [0010](../decisions/0010-holds-as-postings.md) | `e5b0718` |
 | [3.2](3.2-saga-state.md) | Saga state | [0011](../decisions/0011-saga-state.md) | `959033d` |
 | [3.3](3.3-orchestrator.md) | The orchestrator | [0012](../decisions/0012-orchestration.md) | `89100f2` |
+| [3.4](3.4-compensations.md) | Compensations | [0013](../decisions/0013-compensations.md) | — |
 
-Not yet written, because not yet built: **3.0** mock rails over HTTP, **3.4** compensations,
-**3.5** the ambiguous ack, **3.6** choreography for contrast.
+Not yet written, because not yet built: **3.0** mock rails over HTTP, **3.5** the ambiguous ack,
+**3.6** choreography for contrast.
 
 ## Adding one
 

@@ -2,17 +2,20 @@ import { Pool, type PoolClient } from "pg"
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 
 import { stepKey } from "./states.js"
+import type { Currency } from "@ledgerrail/money"
 import { randomString } from "../utils/helpers.js"
 import { PermanentError } from "../utils/error.js"
 import { createAccounts } from "../../test/utils.js"
-import type { Hold, PaymentStep } from "../types.js"
 import { createFakeRail, type Rail } from "../rails/index.js"
+import type { Hold, PaymentStep, PaymentStepName } from "../types.js"
 import { postTransaction } from "../commands/postTransaction/index.js"
+import type { ReverseRequest, ReverseResponse } from "../rails/index.js"
 import { getTestPool, closeTestPool, testTransaction } from "../../test/db.js"
 import { tick, type OrchestratorDeps, type TickResult } from "./orchestrator.js"
 import {
   advance,
   takeLease,
+  listSteps,
   getPayment,
   startPayment,
   MAX_ATTEMPTS,
@@ -58,7 +61,7 @@ describe("Payment orchestrator", () => {
     )
   }
 
-  async function begin(amount = 1_000n) {
+  async function begin(amount = 1_000n, targetCurrency: Currency = "PKR") {
     await fund(amount)
 
     return testTransaction((c) =>
@@ -69,7 +72,7 @@ describe("Payment orchestrator", () => {
           destinationReference: `iban:${randomString()}`,
           amount,
           currency: "PKR",
-          targetCurrency: "PKR",
+          targetCurrency,
         },
         c
       )
@@ -79,11 +82,20 @@ describe("Payment orchestrator", () => {
   const read = (id: string) => testTransaction((c) => getPayment(id, c))
 
   /** Backoff is real, so a test that wants the next attempt must ask for it. */
-  const makeClaimable = (id: string) =>
-    client.query(
+  const makeClaimable = async (id: string) => {
+    await client.query(
+      `UPDATE payments
+          SET next_attempt_at = NOW() + INTERVAL '1 day'
+        WHERE payment_id <> $1
+          AND state NOT IN ('completed', 'compensated', 'failed')`,
+      [id]
+    )
+
+    await client.query(
       "UPDATE payments SET next_attempt_at = NOW() WHERE payment_id = $1",
       [id]
     )
+  }
 
   /**
    * HELD:{ccy} and RAIL:{ccy} are seeded once by a migration and shared by every
@@ -103,18 +115,47 @@ describe("Payment orchestrator", () => {
     return rows[0]?.posted ?? 0n
   }
 
+  const posted = async (accountId: number): Promise<bigint> => {
+    const { rows } = await client.query<{ posted: bigint }>(
+      "SELECT COALESCE(posted, 0) AS posted FROM account_balances WHERE account_id = $1",
+      [accountId]
+    )
+    return rows[0]?.posted ?? 0n
+  }
+
+  const holdOf = async (holdId: string): Promise<Hold> => {
+    const { rows } = await client.query<Hold>(
+      "SELECT * FROM holds WHERE hold_id = $1",
+      [holdId]
+    )
+    if (!rows[0]) throw new Error(`no hold row for ${holdId}`)
+    return rows[0]
+  }
+
+  const stepsOf = (id: string, step: PaymentStepName): Promise<PaymentStep[]> =>
+    testTransaction((c) => listSteps(id, step, c))
+
+  const expire = (holdId: string) =>
+    client.query(
+      "UPDATE holds SET expires_at = NOW() - INTERVAL '1 hour' WHERE hold_id = $1",
+      [holdId]
+    )
+
+  /** initiated → held → quoted → settled. One step per tick, so three ticks. */
+  async function driveToSettled(d: OrchestratorDeps, id: string) {
+    for (let i = 0; i < 3; i++) {
+      await makeClaimable(id)
+      await tick(d)
+    }
+  }
+
   async function driveToEnd(d: OrchestratorDeps, id: string, maxTicks = 12) {
     const seen: TickResult[] = []
 
     for (let i = 0; i < maxTicks; i++) {
       const payment = await read(id)
       if (!payment) throw new Error("payment vanished")
-      if (
-        ["completed", "compensated", "failed", "compensating"].includes(
-          payment.state
-        )
-      )
-        break
+      if (["completed", "compensated", "failed"].includes(payment.state)) break
 
       await makeClaimable(id)
       seen.push(...(await tick(d)).filter((r) => r.payment === id))
@@ -264,16 +305,18 @@ describe("Payment orchestrator", () => {
     await driveToEnd(d, payment.payment_id)
 
     const final = (await read(payment.payment_id))!
-    // Not `failed`: the customer's money is in the reserve, and only a
-    // compensation gives it back. 3.4 drives it from here.
-    expect(final.state).toBe("compensating")
+
+    // Was `compensating` — the furthest 3.3 could take it. The reason it is not
+    // `failed` is unchanged: the customer's money was in the reserve, and only a
+    // compensation gives it back. 3.4 is that compensation.
+    expect(final.state).toBe("compensated")
     expect(final.last_error).toContain("account closed")
 
     const { rows } = await client.query<Hold>(
       "SELECT * FROM holds WHERE hold_id = $1",
       [final.hold_id]
     )
-    expect(rows[0]?.status).toBe("held")
+    expect(rows[0]?.status).toBe("released")
   })
 
   it("gives up after MAX_ATTEMPTS of a transient failure", async () => {
@@ -343,12 +386,12 @@ describe("Payment orchestrator", () => {
     expect(rows.every((s) => s.status !== "started")).toBe(true)
   })
 
-  it("parks a state it cannot drive instead of spinning on it", async () => {
+  it("drives a compensating payment instead of parking it", async () => {
     const payment = await begin()
     const d = deps(createFakeRail())
 
     await makeClaimable(payment.payment_id)
-    await tick(d)
+    await tick(d) // → held, so there is something to give back
 
     await client.query(
       "UPDATE payments SET state = 'compensating', next_attempt_at = NOW() WHERE payment_id = $1",
@@ -359,15 +402,255 @@ describe("Payment orchestrator", () => {
       (r) => r.payment === payment.payment_id
     )
 
-    expect(result?.outcome).toBe("parked")
+    // Until 3.4 this came back `parked`, an hour out: claimPayments keeps
+    // offering a non-terminal state, and an orchestrator with no handler for one
+    // is a hot loop against its own database.
+    expect(result).toEqual({
+      payment: payment.payment_id,
+      outcome: "advanced",
+      state: "compensated",
+    })
 
-    // `compensating` is not terminal, so claimPayments will keep offering it
-    // until 3.4 exists. Without this the orchestrator is a hot loop against its
-    // own database, and the default branch is the only thing preventing it.
-    const parked = (await read(payment.payment_id))!
-    expect(parked.next_attempt_at.getTime()).toBeGreaterThan(
-      Date.now() + 30 * 60 * 1000
+    const final = (await read(payment.payment_id))!
+    expect((await holdOf(final.hold_id!)).status).toBe("released")
+  })
+
+  it("releases the hold and compensates when nothing reached the rail", async () => {
+    // One PKR minor unit is worth less than a US cent, so the quote is refused
+    // permanently. A real failure, and one that happens before the rail is ever
+    // asked to move anything.
+    const payment = await begin(1n, "USD")
+    const d = deps(createFakeRail())
+
+    const heldBefore = await systemBalance("HELD:PKR")
+    const sourceBefore = await posted(sourceAccountId)
+
+    await driveToEnd(d, payment.payment_id)
+
+    const final = (await read(payment.payment_id))!
+    expect(final.state).toBe("compensated")
+
+    // Carried, not cleared. `advance` wipes last_error on a successful move,
+    // which is right everywhere except here: why this payment did not go through
+    // is the only thing anyone will ever ask a compensated row.
+    expect(final.last_error).toContain("rounds to nothing")
+
+    // The rail was never asked to send anything back, because nothing was sent.
+    // The absence of a settle step is what says so — `payments` no longer
+    // remembers which state this was abandoned from, and should not have to.
+    expect(await stepsOf(payment.payment_id, "settle")).toHaveLength(0)
+    expect(await stepsOf(payment.payment_id, "reverse")).toHaveLength(0)
+
+    expect((await holdOf(final.hold_id!)).status).toBe("released")
+    expect((await systemBalance("HELD:PKR")) - heldBefore).toBe(0n)
+    expect((await posted(sourceAccountId)) - sourceBefore).toBe(0n)
+  })
+
+  it("reverses at the rail before releasing a hold whose settle may have landed", async () => {
+    const rail = createFakeRail()
+    const payment = await begin()
+    const d = deps(rail)
+
+    const heldBefore = await systemBalance("HELD:PKR")
+    const railBefore = await systemBalance("RAIL:PKR")
+    const sourceBefore = await posted(sourceAccountId)
+
+    await driveToSettled(d, payment.payment_id)
+    const settled = (await read(payment.payment_id))!
+    expect(settled.state).toBe("settled")
+
+    // A hold is meant to outlive its saga — until it does not. An expired hold
+    // refuses capture, which is the honest route from `settled` into
+    // `compensating`: the rail has the money and the reserve can no longer send
+    // it on. No SQL surgery on `state` to get here.
+    await expire(settled.hold_id!)
+
+    await driveToEnd(d, payment.payment_id)
+
+    const final = (await read(payment.payment_id))!
+    expect(final.state).toBe("compensated")
+    expect(final.last_error).toContain("Hold has expired")
+
+    const reverses = await stepsOf(payment.payment_id, "reverse")
+    expect(reverses).toHaveLength(1)
+    expect(reverses[0]?.status).toBe("succeeded")
+    expect((reverses[0]?.response as ReverseResponse).status).toBe("reversed")
+
+    // Named by the key the settle was sent with, not by the reference it came
+    // back with. The reference is the version that does not work — a settle
+    // whose answer was lost has none, and that is the settlement this exists for.
+    expect((reverses[0]?.request as ReverseRequest).settleIdempotencyKey).toBe(
+      stepKey(payment.payment_id, "settle")
     )
+
+    // And the rail agrees it no longer holds the money — which is what 3.5 will
+    // ask it, through the same map.
+    const atRail = await rail.lookup(stepKey(payment.payment_id, "settle"))
+    expect(atRail?.status).toBe("reversed")
+
+    // Capture never ran, so nothing ever reached the clearing account.
+    expect((await systemBalance("RAIL:PKR")) - railBefore).toBe(0n)
+    expect((await systemBalance("HELD:PKR")) - heldBefore).toBe(0n)
+    expect((await posted(sourceAccountId)) - sourceBefore).toBe(0n)
+  })
+
+  it("reverses a settlement whose answer was never received", async () => {
+    const payment = await begin()
+    let asked: ReverseRequest | null = null
+
+    const d = deps(
+      createFakeRail({
+        // Transient: the call may have reached the bank and only the answer was
+        // lost. callRail leaves the step `started`, and that is the whole reason
+        // the rule is "not failed" rather than "succeeded" — "we do not know"
+        // has to compensate exactly like "we do".
+        beforeSettle: () => {
+          throw new Error("ETIMEDOUT")
+        },
+        beforeReverse: (req) => {
+          asked = req
+        },
+      })
+    )
+
+    await driveToSettled(d, payment.payment_id) // gets as far as `settling`
+    expect((await read(payment.payment_id))?.state).toBe("settling")
+
+    // Spend the budget so the next failure abandons instead of backing off.
+    await client.query(
+      "UPDATE payments SET attempts = $2, next_attempt_at = NOW() WHERE payment_id = $1",
+      [payment.payment_id, MAX_ATTEMPTS - 1]
+    )
+
+    await driveToEnd(d, payment.payment_id)
+
+    const final = (await read(payment.payment_id))!
+    expect(final.state).toBe("compensated")
+
+    const settles = await stepsOf(payment.payment_id, "settle")
+    expect(settles.some((s) => s.status === "started")).toBe(true)
+
+    // Asked anyway. The fake holds no settlement under that key, so it answers
+    // `not_found` — an answer, not an error, and therefore a succeeded step: we
+    // asked, and learned there was nothing there.
+    expect(asked).not.toBeNull()
+    const reverses = await stepsOf(payment.payment_id, "reverse")
+    expect(reverses).toHaveLength(1)
+    expect(reverses[0]?.status).toBe("succeeded")
+    expect((reverses[0]?.response as ReverseResponse).status).toBe("not_found")
+
+    expect((await holdOf(final.hold_id!)).status).toBe("released")
+  })
+
+  it("does not ask the rail to reverse a settlement the rail refused", async () => {
+    const payment = await begin()
+    let reverses = 0
+
+    const d = deps(
+      createFakeRail({
+        beforeSettle: () => {
+          throw new PermanentError("account closed")
+        },
+        beforeReverse: () => {
+          reverses += 1
+        },
+      })
+    )
+
+    await driveToEnd(d, payment.payment_id)
+
+    const final = (await read(payment.payment_id))!
+    expect(final.state).toBe("compensated")
+
+    // `failed` is the rail's own "no" — there is nothing at the far end to send
+    // back, and asking would be a reversal of a payment that never happened.
+    // The test above is the same code path with a `started` row instead.
+    const settles = await stepsOf(payment.payment_id, "settle")
+    expect(settles.length).toBeGreaterThan(0)
+    expect(settles.every((s) => s.status === "failed")).toBe(true)
+
+    expect(reverses).toBe(0)
+    expect(await stepsOf(payment.payment_id, "reverse")).toHaveLength(0)
+    expect((await holdOf(final.hold_id!)).status).toBe("released")
+  })
+
+  it("presents the same reverse key on every attempt", async () => {
+    const payment = await begin()
+    const keys: string[] = []
+
+    const d = deps(
+      createFakeRail({
+        beforeReverse: (req) => {
+          keys.push(req.idempotencyKey)
+          if (keys.length === 1) throw new Error("ECONNRESET")
+        },
+      })
+    )
+
+    const heldBefore = await systemBalance("HELD:PKR")
+
+    await driveToSettled(d, payment.payment_id)
+    const settled = (await read(payment.payment_id))!
+    await expire(settled.hold_id!)
+
+    await driveToEnd(d, payment.payment_id)
+
+    const final = (await read(payment.payment_id))!
+    expect(final.state).toBe("compensated")
+
+    // Two attempts, one key. A retry that invents a new one is a second reversal
+    // as far as the bank is concerned — the rule that keeps stepKey per step
+    // rather than per attempt, applied to the compensation.
+    expect(keys).toHaveLength(2)
+    expect(new Set(keys).size).toBe(1)
+    expect(keys[0]).toBe(stepKey(payment.payment_id, "reverse"))
+
+    const reverses = await stepsOf(payment.payment_id, "reverse")
+    expect(reverses).toHaveLength(2)
+    expect(reverses[0]?.status).toBe("started") // never learned
+    expect(reverses[1]?.status).toBe("succeeded")
+
+    // And the money came back exactly once, because the release key is derived
+    // from the hold and the journal refuses the second one.
+    expect((await systemBalance("HELD:PKR")) - heldBefore).toBe(0n)
+    const { rowCount } = await client.query(
+      "SELECT 1 FROM events WHERE idempotency_key = $1",
+      [`hold:${final.hold_id}:release`]
+    )
+    expect(rowCount).toBe(1)
+  })
+
+  it("fails a compensation it cannot finish instead of retrying it forever", async () => {
+    const payment = await begin()
+    const d = deps(
+      createFakeRail({
+        beforeReverse: () => {
+          throw new PermanentError("reversal window closed")
+        },
+      })
+    )
+
+    await driveToSettled(d, payment.payment_id)
+    const settled = (await read(payment.payment_id))!
+    await expire(settled.hold_id!)
+
+    await driveToEnd(d, payment.payment_id)
+
+    const final = (await read(payment.payment_id))!
+
+    // Before 3.4, abandonTo("compensating") returned null and this rescheduled
+    // forever with a clean record and a budget it never spent — patience that
+    // was really a hot loop. There is nowhere to compensate *to*.
+    expect(final.state).toBe("failed")
+    expect(final.last_error).toContain("reversal window closed")
+
+    // The money is stranded in the reserve, and `failed` is only an acceptable
+    // terminal because the sweeper is behind it: this hold is expired and its
+    // payment is now terminal, which is exactly what claimExpired selects.
+    // Proven in sweepHolds.test.ts — "sweeps the hold of a payment whose
+    // compensation gave up" — rather than here, so this file never runs a
+    // sweep that could release another test's hold.
+    expect((await holdOf(final.hold_id!)).status).toBe("held")
   })
 
   it("passes over a payment another worker holds", async () => {

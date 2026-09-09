@@ -359,6 +359,23 @@ export async function unfinishedSteps(
   return rows
 }
 
+/** Every attempt at one step, in order. `countSteps` bounds a loop; this one
+ * answers what actually happened, which is what a compensation needs. */
+export async function listSteps(
+  paymentId: string,
+  step: PaymentStepName,
+  client: PoolClient
+): Promise<PaymentStep[]> {
+  const { rows } = await client.query<PaymentStep>(
+    `SELECT * FROM payment_steps
+      WHERE payment_id = $1 AND step = $2
+      ORDER BY attempt`,
+    [paymentId, step]
+  )
+
+  return rows
+}
+
 export async function getPayment(
   paymentId: string,
   client: PoolClient

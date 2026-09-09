@@ -8,6 +8,8 @@ import type {
   QuoteResponse,
   SettleRequest,
   SettleResponse,
+  ReverseRequest,
+  ReverseResponse,
 } from "./types.js"
 
 const IDENTITY_RATE = "1.0000000000"
@@ -55,6 +57,8 @@ export interface FakeRailOptions {
    * side of the write below, and that is 3.5's.
    */
   beforeSettle?: (req: SettleRequest) => Promise<void> | void
+  /** The mirror of beforeSettle, so a compensation can be made to fail too. */
+  beforeReverse?: (req: ReverseRequest) => Promise<void> | void
 }
 
 /**
@@ -80,6 +84,7 @@ export function createFakeRail(options: FakeRailOptions = {}): Rail {
   const quotes = new Map<string, Replayed<QuoteResponse>>()
   const byQuoteId = new Map<string, Quoted>()
   const settlements = new Map<string, Replayed<SettleResponse>>()
+  const reversals = new Map<string, Replayed<ReverseResponse>>()
 
   return {
     async quote(req: QuoteRequest): Promise<QuoteResponse> {
@@ -158,6 +163,16 @@ export function createFakeRail(options: FakeRailOptions = {}): Rail {
           )
         }
 
+        // A reversed settlement is not a settled one. Unreachable from the
+        // orchestrator — nothing returns to `settling` once compensation starts
+        // — and refused anyway, because a fake that quietly answers "settled"
+        // to a key it has already sent back is more permissive than any rail.
+        if (replay.response.status === "reversed") {
+          throw new PermanentError(
+            `Settle key ${req.idempotencyKey} was reversed`
+          )
+        }
+
         // Before the injected failure and before the quote check below: a key
         // that has already settled is answered from the map no matter what,
         // because a rail that can be made to fail a *replay* deduplicates only
@@ -203,6 +218,49 @@ export function createFakeRail(options: FakeRailOptions = {}): Rail {
 
     async lookup(idempotencyKey: string): Promise<SettleResponse | null> {
       return settlements.get(idempotencyKey)?.response ?? null
+    },
+
+    async reverse(req: ReverseRequest): Promise<ReverseResponse> {
+      const fp = fingerprint([
+        req.settleIdempotencyKey,
+        req.amount,
+        req.currency,
+      ])
+
+      const replay = reversals.get(req.idempotencyKey)
+
+      if (replay) {
+        if (replay.fingerprint !== fp) {
+          throw new PermanentError(
+            `Reverse key ${req.idempotencyKey} reused for another request`
+          )
+        }
+
+        return replay.response
+      }
+
+      await options.beforeReverse?.(req)
+
+      const settled = settlements.get(req.settleIdempotencyKey)
+
+      const response: ReverseResponse = settled
+        ? { railReference: `rev_${randomUUID()}`, status: "reversed" }
+        : { railReference: "", status: "not_found" }
+
+      // Marked, not deleted. `lookup` is 3.5's whole interface to what the rail
+      // believes, and a reversal that erases the settlement leaves the
+      // reconciler unable to distinguish "sent back" from "never happened" —
+      // the one distinction it is being written to make.
+      if (settled) {
+        settlements.set(req.settleIdempotencyKey, {
+          fingerprint: settled.fingerprint,
+          response: { ...settled.response, status: "reversed" },
+        })
+      }
+
+      reversals.set(req.idempotencyKey, { fingerprint: fp, response })
+
+      return response
     },
   }
 }

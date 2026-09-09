@@ -5,9 +5,9 @@ import type { Hold } from "../../types.js"
 import { holdFunds } from "./holdFunds.js"
 import { randomString } from "../../utils/helpers.js"
 import { createAccounts } from "../../../test/utils.js"
-import { captureHold, releaseHold } from "./settleHold.js"
 import { postTransaction } from "../postTransaction/index.js"
 import { getTestPool, closeTestPool } from "../../../test/db.js"
+import { captureHold, releaseHold, holdKey } from "./settleHold.js"
 
 const HOUR = 60 * 60 * 1000
 const inAnHour = () => new Date(Date.now() + HOUR)
@@ -310,5 +310,51 @@ describe("Holds", () => {
     // the hold. Returning the money is the sweeper's job, and the sweeper is 3.4.
     expect((await holdRow(holdId)).status).toBe("held")
     expect(await availableOf(accountId)).toBe(20n)
+  })
+
+  it("releases an expired hold it would refuse to capture", async () => {
+    const { accountId } = await fundedAccount(100n)
+
+    const { holdId } = await hold(accountId, 80n, anHourAgo())
+    expect(await availableOf(accountId)).toBe(20n)
+
+    // Expiry bounds how long money may be *held*, not how long it may be given
+    // back. The asymmetry is load-bearing from 3.4: a capture that fails on
+    // expiry abandons to `compensating`, whose only move is this release — and
+    // if it refused for the same reason the money would be stranded by the very
+    // deadline that exists to protect it.
+    await releaseHold(holdId, randomString(), client)
+
+    expect((await holdRow(holdId)).status).toBe("released")
+    expect(await availableOf(accountId)).toBe(100n)
+  })
+
+  it("returns the original receipt when a release is replayed", async () => {
+    const { accountId } = await fundedAccount(100n)
+    const { holdId } = await hold(accountId, 80n)
+
+    const key = holdKey(holdId, "release")
+    const first = await releaseHold(holdId, key, client)
+    const reserveAfterFirst = await reserveBalance()
+
+    // The same key from a second caller — a compensating payment and the sweeper
+    // both derive it. Latent since 3.1: the hold was claimed before the replay
+    // was looked up, so this threw "Hold is not available to settle" on a call
+    // that had already succeeded. The same ordering bug 3.1 fixed one file over
+    // in postTransaction, left behind here because nothing called it twice.
+    const second = await releaseHold(holdId, key, client)
+
+    expect(second.eventId).toBe(first.eventId)
+    expect(second.replayed).toBe(true)
+
+    // And nothing moved the second time.
+    expect(await reserveBalance()).toBe(reserveAfterFirst)
+    expect(await availableOf(accountId)).toBe(100n)
+
+    const { rows } = await client.query<{ n: number }>(
+      "SELECT COUNT(*)::int AS n FROM events WHERE idempotency_key = $1",
+      [key]
+    )
+    expect(rows[0]?.n).toBe(1)
   })
 })

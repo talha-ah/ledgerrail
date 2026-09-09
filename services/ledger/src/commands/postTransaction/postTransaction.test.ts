@@ -73,18 +73,25 @@ describe("Post Transaction", () => {
   })
 
   it("Invalid Accounts", async () => {
+    // Both ids were hardcoded: `2` assumed HELD:USD lands second in the holds
+    // migration, and `100` assumed the suite would never create a hundredth
+    // account. The second bet expired when 3.4 added test files — account 100
+    // exists now, it is PKR like everything createAccounts makes, so the
+    // currency check fired before the missing-account check ever ran and the
+    // test passed on the wrong branch for one commit before it failed.
+    const { rows: usd } = await client.query<{ id: number }>(
+      "SELECT id FROM accounts WHERE account_number = 'HELD:USD'"
+    )
+    const { rows: next } = await client.query<{ id: number }>(
+      "SELECT COALESCE(MAX(id), 0) + 1 AS id FROM accounts"
+    )
+
     const input: PostTransactionInput = {
       idempotencyKey: randomString(),
       currency: "USD",
       postings: [
-        {
-          accountId: 100,
-          amount: -100n,
-        },
-        {
-          accountId: 2,
-          amount: 100n,
-        },
+        { accountId: next[0]!.id, amount: -100n },
+        { accountId: usd[0]!.id, amount: 100n },
       ],
     }
 

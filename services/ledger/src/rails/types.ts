@@ -33,7 +33,7 @@ export interface SettleRequest {
 
 export interface SettleResponse {
   railReference: string
-  status: "settled"
+  status: "settled" | "reversed"
 }
 
 /**
@@ -62,4 +62,33 @@ export interface Rail {
    * requirement where the requirement lives.
    */
   lookup(idempotencyKey: string): Promise<SettleResponse | null>
+
+  /**
+   * Idempotent on its own `idempotencyKey`, like `settle` — a compensation is
+   * retried under exactly the same rules as the thing it is undoing.
+   */
+  reverse(req: ReverseRequest): Promise<ReverseResponse>
+}
+
+export interface ReverseRequest {
+  idempotencyKey: string
+  /**
+   * The settlement being undone, named by the key it was sent with rather than
+   * by the reference it came back with. Derivable from the payment row, which
+   * is the only version that works: a settle whose answer was lost has no
+   * reference, and that is exactly the settlement a compensation exists for.
+   */
+  settleIdempotencyKey: string
+  amount: Amount
+  currency: Currency
+}
+
+export interface ReverseResponse {
+  railReference: string
+  /**
+   * `not_found` is an answer, not an error. A settle whose response was lost may
+   * never have landed, and a compensator that is punished for asking has to
+   * guess instead — which is the failure mode this whole stage is about.
+   */
+  status: "reversed" | "not_found"
 }

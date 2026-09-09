@@ -3,14 +3,23 @@ import type { PoolClient } from "pg"
 import { stepKey } from "./states.js"
 import type { Currency } from "@ledgerrail/money"
 import { holdFunds } from "../commands/holds/holdFunds.js"
-import { captureHold } from "../commands/holds/settleHold.js"
 import type { Payment, PaymentState, PaymentStepName } from "../types.js"
-import type { Rail, QuoteRequest, SettleRequest } from "../rails/index.js"
 import {
-  PermanentError,
+  holdKey,
+  captureHold,
+  releaseHold,
+} from "../commands/holds/settleHold.js"
+import type {
+  Rail,
+  QuoteRequest,
+  SettleRequest,
+  ReverseRequest,
+} from "../rails/index.js"
+import {
   errorCode,
-  errorMessage,
   isPermanent,
+  errorMessage,
+  PermanentError,
 } from "../utils/error.js"
 import {
   advance,
@@ -18,6 +27,7 @@ import {
   beginStep,
   finishStep,
   takeLease,
+  listSteps,
   countSteps,
   getPayment,
   leaseUntil,
@@ -355,14 +365,15 @@ async function park(payment: Payment, deps: OrchestratorDeps) {
  * compensation. That is why the transition table has no edge from those states
  * straight to `failed`: skipping compensation strands a customer's money.
  */
-function abandonTo(state: PaymentState): PaymentState | null {
+function abandonTo(state: PaymentState): PaymentState {
   if (state === "initiated") return "failed"
 
-  // Already compensating: there is nowhere to abandon *to*. Returning
-  // `compensating` is a self-transition the table refuses, which throws before
-  // any UPDATE, is swallowed as "lost", writes no backoff, and reinstates the
-  // hot loop. Falling through to reschedule is the honest answer.
-  if (state === "compensating") return null
+  // A compensation that cannot finish has nowhere to compensate *to*. `failed`
+  // is the honest terminal, and it is only safe because the sweeper is behind
+  // it: the hold outlives the payment, expires, and is released once no live
+  // payment claims it. Returning null rescheduled forever, which looked like
+  // patience and was a hot loop with a clean record.
+  if (state === "compensating") return "failed"
 
   return "compensating"
 }
@@ -386,16 +397,22 @@ async function recordFailure(
 
   try {
     const to = abandonTo(current.state)
-    if ((isPermanent(err) || current.attempts + 1 >= MAX_ATTEMPTS) && to) {
+    if (isPermanent(err) || current.attempts + 1 >= MAX_ATTEMPTS) {
       await deps.transaction((client) =>
         advance(current.payment_id, current.state, to, client, {
           lastError: message,
           nextAttemptAt: new Date(),
+          // A payment abandoned after five settle failures enters `compensating`
+          // with the budget already spent, so the first transient reverse failure
+          // ends it immediately. Abandonment starts a different kind of work and
+          // gets its own budget — the same conflation 3.3 found on the successful
+          // moves, one path over.
+          resetAttempts: true,
           // From `payment`, not `current`: the token is what this worker was
-          // handed at claim time, and re-reading it is what would make the
-          // fence tautological. Needed here and nowhere else — a forward
-          // transition fences itself by changing the state, but abandonment
-          // leaves from a state the rightful owner is still working in.
+          // handed at claim time, and re-reading it is what would make the fence
+          // tautological. Needed here and nowhere else — a forward transition
+          // fences itself by changing the state, but abandonment leaves from a
+          // state the rightful owner is still working in.
           leaseToken: payment.lease_token,
         })
       )
@@ -438,6 +455,103 @@ async function recordFailure(
 }
 
 /**
+ * Whether the rail has to be asked to send the money back.
+ *
+ * `payments` holds current state, so by the time it reads `compensating` the
+ * state it was abandoned from is gone — and that is the wrong thing to ask
+ * anyway. The step log answers it directly and append-only: a settle attempt
+ * exists iff we tried it, and a `failed` one is the rail's own "no". Anything
+ * else — `succeeded`, or `started` and never resolved — means the money may be
+ * gone, and "may be" is treated exactly like "is". The same rule callRail obeys
+ * when it declines to stamp a transport error as a refusal.
+ */
+async function settlementMayHaveLanded(
+  payment: Payment,
+  deps: OrchestratorDeps
+): Promise<boolean> {
+  const steps = await deps.transaction((client) =>
+    listSteps(payment.payment_id, "settle", client)
+  )
+
+  return steps.some((step) => step.status !== "failed")
+}
+
+/**
+ * Asks the rail to send it back. Intent, call, outcome — the same three phases
+ * as the settle, because it is the same kind of call: one we do not control,
+ * whose answer can be lost.
+ *
+ * Re-called on resume rather than skipped when a reverse step already succeeded,
+ * for the reason the settle is: one code path, and the key is what makes a
+ * second call harmless. A `not_found` is a *succeeded* step — we asked, and
+ * learned there was nothing there.
+ */
+async function reverseSettlement(payment: Payment, deps: OrchestratorDeps) {
+  const request: ReverseRequest = {
+    idempotencyKey: stepKey(payment.payment_id, "reverse"),
+    settleIdempotencyKey: stepKey(payment.payment_id, "settle"),
+    amount: String(payment.amount),
+    currency: payment.currency,
+  }
+
+  const { attempt, response } = await callRail(
+    payment,
+    "reverse",
+    request,
+    () => deps.rail.reverse(request),
+    deps
+  )
+
+  await deps.transaction((client) =>
+    finishStep(
+      payment.payment_id,
+      "reverse",
+      attempt,
+      { status: "succeeded", response },
+      client
+    )
+  )
+}
+
+/**
+ * `compensating → compensated`.
+ *
+ * A compensation is a forward transaction. Nothing is deleted and no event is
+ * amended: the bank is asked to send the money back, and the reserve is emptied
+ * by a new `HoldReleased` posting that sits in the journal beside the settle it
+ * answers. You cannot un-send money; you send it back — which is why 3.4 adds no
+ * event type. The ledger movement of a compensation is one the ledger already
+ * had.
+ */
+async function compensate(payment: Payment, deps: OrchestratorDeps) {
+  if (!payment.hold_id) {
+    throw new PermanentError(
+      `Payment ${payment.payment_id} is compensating with nothing held`
+    )
+  }
+
+  if (await settlementMayHaveLanded(payment, deps)) {
+    await reverseSettlement(payment, deps)
+  }
+
+  await deps.transaction(async (client) => {
+    await releaseHold(
+      payment.hold_id!,
+      holdKey(payment.hold_id!, "release"),
+      client
+    )
+
+    await advance(payment.payment_id, "compensating", "compensated", client, {
+      resetAttempts: true,
+      // Carried, not cleared. `advance` clears last_error on a successful move,
+      // which is right everywhere else and wrong here: why this payment did not
+      // go through is the only thing anyone will ask a compensated row.
+      lastError: payment.last_error,
+    })
+  })
+}
+
+/**
  * Drives one payment by one *step*. Not to completion, and not by one state:
  * `settling` is the middle of the settle step, not a resting place.
  *
@@ -477,6 +591,10 @@ async function drive(
       case "settled":
         await capture(payment, deps)
         return { payment: id, outcome: "advanced", state: "completed" }
+
+      case "compensating":
+        await compensate(payment, deps)
+        return { payment: id, outcome: "advanced", state: "compensated" }
 
       default:
         await park(payment, deps)
